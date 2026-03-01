@@ -1,0 +1,79 @@
+{
+  "baseStlPath": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/base.stl",
+  "toolStlPath": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/tool.stl",
+  "cameraStlPath": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/camera.stl",
+  "toolTransform": [
+    0.0, -0.86083, 0.50889, 72.5,
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 0.50889, 0.86083, 516.57368,
+    0.0, 0.0, 0.0, 1.0
+  ],
+  "cameraTransform": [
+    1.0, 0.0, 0.0, 52.4276,
+    0.0, 0.866, 0.5, 40.955234,
+    0.0, -0.5, 0.866, -324.531252,
+    0.0, 0.0, 0.0, 1.0
+  ],
+  "joints": [
+    {
+      "a": 155.0,
+      "alpha": 1.5707963267948966,
+      "d": 450.0,
+      "theta": 1.5707963267948966,
+      "minAngle": -2.9670597283903604,
+      "maxAngle": 2.9670597283903604,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link1.stl",
+      "color": [0.8, 1.0, 1.0]
+    },
+    {
+      "a": 614.0,
+      "alpha": 0.0,
+      "d": 0.0,
+      "theta": 1.5707963267948966,
+      "minAngle": -2.7052603405912108,
+      "maxAngle": 1.5707963267948966,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link2.stl",
+      "color": [1.0, 0.8, 0.8]
+    },
+    {
+      "a": 200.0,
+      "alpha": 1.5707963267948966,
+      "d": 0.0,
+      "theta": 0.0,
+      "minAngle": -1.4835298641951802,
+      "maxAngle": 2.4434609527920614,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link3.stl",
+      "color": [1.0, 0.8, 0.6]
+    },
+    {
+      "a": 0.0,
+      "alpha": -1.5707963267948966,
+      "d": 640.0,
+      "theta": 0.0,
+      "minAngle": -2.6179938779914943,
+      "maxAngle": 2.6179938779914943,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link4.stl",
+      "color": [0.6, 0.4, 0.6]
+    },
+    {
+      "a": 0.0,
+      "alpha": -1.5707963267948966,
+      "d": 0.0,
+      "theta": 3.141592653589793,
+      "minAngle": -2.3561944901923449,
+      "maxAngle": 1.5707963267948966,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link5.stl",
+      "color": [1.0, 1.0, 0.0]
+    },
+    {
+      "a": 0.0,
+      "alpha": 0.0,
+      "d": 0.0,
+      "theta": 0.0,
+      "minAngle": -3.6651914291880921,
+      "maxAngle": 3.6651914291880921,
+      "stlFile": "D:/Qt_develop/offLineProgrammingSimulation/model/weldingRobot/Link6.stl",
+      "color": [0.8, 0.9, 1.0]
+    }
+  ]
+}
