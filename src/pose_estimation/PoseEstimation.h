@@ -116,6 +116,8 @@ public:
 
     bool isValidSolution(const Vector6d& q, std::vector<std::pair<double,double>> qlimits) const;
 
+    double calculateManipulability(const std::vector<Vector6d>& path) const;
+
 private:
     bool inverseKinematics_wrist_partitioned(const Placement &placement, const std::vector<Matrix4d> &targetPose, double redundantAngle, std::vector<Vector6d> &q) const;
 
@@ -126,8 +128,6 @@ private:
     bool findBestNextSolution(const Vector6d& prev_q, const std::vector<Vector6d>& candidates, Vector6d& out_best_q) const;
 
     std::vector<std::vector<Vector6d>> selectBestPaths(const std::vector<std::vector<std::vector<Vector6d>>>& all_segments_paths) const;
-
-    double calculateManipulability(const std::vector<Vector6d>& path) const;
 
 public:
     std::vector<std::vector<Vector6d>> cartesianPlanning(const std::vector<std::vector<Eigen::Matrix4d>> &trajectories) const;

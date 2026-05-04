@@ -72,7 +72,7 @@ bool ImprovedRRTStar::plan(const std::vector<double>& q_start, const std::vector
 
         std::cout << "正在进行 6 轴规划..." << std::endl;
 
-        ompl::base::PlannerStatus solved = ss.solve(25.0);
+        ompl::base::PlannerStatus solved = ss.solve(80.0);
 
         if (!solved) {
             std::cout << "未能找到可行路径。" << std::endl;

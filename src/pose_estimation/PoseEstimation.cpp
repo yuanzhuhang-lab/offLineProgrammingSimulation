@@ -299,17 +299,17 @@ double PoseEstimation::objective(
         con2 = std::max(con2, point_con3);
     }}
 
-//    double min_manipulability = std::numeric_limits<double>::max();
-//    for(size_t z = 0; z < qs.size(); z++) {
-//        for (const auto& q_point : qs[z]) {
-//            double manipulability = computeYoshikawaManipulability(q_point);
-//            min_manipulability = std::min(min_manipulability, manipulability);
-//        }
-//    }
-//    double max_reference = 4.67286e+08;
-//    double manipulability_ratio = (max_reference > 1e-6) ? (min_manipulability / max_reference) : 0.0;
-//    double con3 = 1.0 - std::min(1.0, manipulability_ratio);
-    double con3 = 0;
+    double min_manipulability = std::numeric_limits<double>::max();
+    for(size_t z = 0; z < qs.size(); z++) {
+        for (const auto& q_point : qs[z]) {
+            double manipulability = computeYoshikawaManipulability(q_point);
+            min_manipulability = std::min(min_manipulability, manipulability);
+        }
+    }
+    double max_reference = 4.67286e+08;
+    double manipulability_ratio = (max_reference > 1e-6) ? (min_manipulability / max_reference) : 0.0;
+    double con3 = 1.0 - std::min(1.0, manipulability_ratio);
+//    double con3 = 0;
 
     if (!viewPoint.empty()) {
         Matrix4d end2camMatrix;
