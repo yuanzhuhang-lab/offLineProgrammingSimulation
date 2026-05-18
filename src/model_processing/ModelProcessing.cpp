@@ -1,5 +1,57 @@
 ﻿#include "ModelProcessing.h"
 
+#include <algorithm>
+#include <cmath>
+#include <unordered_set>
+
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListIteratorOfListOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopoDS_Solid.hxx>
+
+namespace
+{
+constexpr double kVeryShortEdgeLengthMm = 1.0e-3;
+constexpr double kIntervalParameterTolerance = 1.0e-9;
+
+double squaredDistance(const Point3D &a, const Point3D &b)
+{
+    const double dx = a.x - b.x;
+    const double dy = a.y - b.y;
+    const double dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+std::vector<int> sortedOwnerIds(const std::unordered_set<int> &ownerSet)
+{
+    std::vector<int> ownerIds(ownerSet.begin(), ownerSet.end());
+    std::sort(ownerIds.begin(), ownerIds.end());
+    return ownerIds;
+}
+
+bool ownerSetsIntersect(const std::unordered_set<int> &lhs,
+                        const std::unordered_set<int> &rhs)
+{
+    const std::unordered_set<int> *smaller = &lhs;
+    const std::unordered_set<int> *larger = &rhs;
+    if (lhs.size() > rhs.size()) {
+        smaller = &rhs;
+        larger = &lhs;
+    }
+
+    for (const int ownerId : *smaller) {
+        if (larger->find(ownerId) != larger->end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 Point3D ModelProcessing::Point2Tuple(const gp_Pnt &pnt)
 {
     return Point3D(pnt.X(), pnt.Y(), pnt.Z());
@@ -16,7 +68,7 @@ Normal3D ModelProcessing::CrossProduct(const Normal3D &a, const Normal3D &b)
         a.y * b.z - a.z * b.y,
         a.z * b.x - a.x * b.z,
         a.x * b.y - a.y * b.x
-                );
+        );
 }
 
 double ModelProcessing::DotProduct(const Normal3D &a, const Normal3D &b)
@@ -65,7 +117,7 @@ std::unique_ptr<Normal3D> ModelProcessing::TangentAtParameter(const Handle(Geom_
             tangent.x / mag,
             tangent.y / mag,
             tangent.z / mag
-        );
+            );
 
     } catch (...) {
         return nullptr;
@@ -305,6 +357,55 @@ std::pair<std::vector<Point3D>, std::vector<double>> ModelProcessing::Discretize
     }
 }
 
+std::pair<std::vector<Point3D>, std::vector<double>> ModelProcessing::DiscretizeEdgeByType(
+    const TopoDS_Edge &edge,
+    bool is_arc_or_spline,
+    double first_param,
+    double last_param,
+    double linear_step)
+{
+    double f = first_param;
+    double l = last_param;
+    if (l < f) {
+        std::swap(f, l);
+    }
+    if (std::fabs(l - f) <= kIntervalParameterTolerance) {
+        return std::make_pair(std::vector<Point3D>(), std::vector<double>());
+    }
+
+    Handle(Geom_Curve) curve_handle = BRep_Tool::Curve(edge, first_param, last_param);
+    if (curve_handle.IsNull()) {
+        return std::make_pair(std::vector<Point3D>(), std::vector<double>());
+    }
+
+    auto get_curve_type_name = [&]() -> std::string {
+        try {
+            return std::string(curve_handle->DynamicType()->Name());
+        } catch (...) {
+            return "";
+        }
+    };
+
+    const std::string tname = get_curve_type_name();
+    if (!is_arc_or_spline || tname.find("Geom_Line") != std::string::npos) {
+        TopoDS_Edge trimmedEdge = BRepBuilderAPI_MakeEdge(curve_handle, f, l).Edge();
+        std::pair<std::vector<Point3D>, std::vector<double>> sampled =
+            UniformSampleEdge(trimmedEdge, linear_step);
+        if (sampled.second.size() == sampled.first.size()) {
+            for (std::size_t index = 0; index < sampled.second.size(); ++index) {
+                if (sampled.second[index] < f) {
+                    sampled.second[index] = f;
+                } else if (sampled.second[index] > l) {
+                    sampled.second[index] = l;
+                }
+            }
+        }
+        return sampled;
+    }
+
+    return EqualChordLengthSampleCurve(curve_handle, f, l, linear_step);
+}
+
 std::tuple<Normal3D, bool, UVParams> ModelProcessing::NormalOnFaceAtPoint(const TopoDS_Face &face, const Point3D &point_xyz)
 {
     Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
@@ -370,19 +471,27 @@ TopoDS_Edge ModelProcessing::MakeVectorEdge(const Point3D &p, const Normal3D &ve
     return BRepBuilderAPI_MakeEdge(start, end).Edge();
 }
 
-void ModelProcessing::GenerateDiscretePointsNormals(std::vector<EdgeInfo> &edges_info, double step)
+void ModelProcessing::GenerateDiscretePointsNormals(const std::vector<EdgeProcessingCache> &edgeCaches,
+                                                   std::vector<EdgeInfo> &edges_info,
+                                                   double step)
 {
     // 使用range-based for loop和auto
-    for (auto& einfo : edges_info) {
+    for (std::size_t edgeIdx = 0; edgeIdx < edges_info.size(); ++edgeIdx) {
+        auto& einfo = edges_info[edgeIdx];
         std::vector<Point3D> sample_points;
         std::vector<std::tuple<Normal3D, Normal3D, Normal3D>> normals_list;
 
         std::vector<Point3D> pts;
         std::vector<double> params;
-        std::tie(pts, params) = DiscretizeEdgeByType(einfo.edge, einfo.is_arc_or_spline, step);
+        const EdgeProcessingCache &edgeCache = edgeCaches[edgeIdx];
+        std::tie(pts, params) = DiscretizeEdgeByType(einfo.edge,
+                                                     edgeCache.is_arc_or_spline,
+                                                     edgeCache.parameter_begin,
+                                                     edgeCache.parameter_end,
+                                                     step);
         sample_points = pts;
 
-        auto& faces = einfo.faces_info.faces;
+        const auto& faces = edgeCache.faces_info.faces;
         if (faces.size() < 2) {
             continue;
         }
@@ -466,36 +575,6 @@ void ModelProcessing::GenerateDiscretePointsNormals(std::vector<EdgeInfo> &edges
     }
 }
 
-FacesInfo ModelProcessing::GetFacesInfo(const TopoDS_Edge &edge, const TopoDS_Shape &full_shape)
-{
-    FacesInfo faces_info;
-
-    TopExp_Explorer face_explorer(full_shape, TopAbs_FACE);
-    while (face_explorer.More()) {
-        TopoDS_Face face = TopoDS::Face(face_explorer.Current());
-        TopExp_Explorer edge_in_face(face, TopAbs_EDGE);
-        bool found = false;
-
-        while (edge_in_face.More()) {
-            TopoDS_Edge e2 = TopoDS::Edge(edge_in_face.Current());
-            if (e2.IsSame(edge)) {
-                found = true;
-                break;
-            }
-            edge_in_face.Next();
-        }
-
-        if (found) {
-            faces_info.faces.push_back(face);
-            faces_info.face_count++;
-        }
-
-        face_explorer.Next();
-    }
-
-    return faces_info;
-}
-
 std::pair<Point3D, Point3D> ModelProcessing::EdgeEndpoints(const TopoDS_Edge &edge)
 {
     TopExp_Explorer vexp(edge, TopAbs_VERTEX);
@@ -557,43 +636,226 @@ bool ModelProcessing::IsArcOrSpline(const TopoDS_Edge &edge)
 std::vector<EdgeInfo> ModelProcessing::ExtractEdgesFromStep(const TopoDS_Shape& shape)
 {
     std::vector<EdgeInfo> edges_info;
-    int idx = 0;
+    std::vector<EdgeProcessingCache> edge_caches;
 
-    TopExp_Explorer explorer(shape, TopAbs_EDGE);
-    while (explorer.More()) {
-        TopoDS_Edge edge = TopoDS::Edge(explorer.Current());
+    std::vector<TopoDS_Solid> solids;
+    TopTools_IndexedMapOfShape original_face_map;
+    std::vector<int> original_face_to_solid;
+    for (TopExp_Explorer solidExplorer(shape, TopAbs_SOLID); solidExplorer.More(); solidExplorer.Next()) {
+        const TopoDS_Solid solid = TopoDS::Solid(solidExplorer.Current());
+        const int solidId = static_cast<int>(solids.size());
+        solids.push_back(solid);
 
-        auto faces_info = GetFacesInfo(edge, shape);
-
-        if (faces_info.face_count <= 1) {
-            explorer.Next();
-            continue;
+        for (TopExp_Explorer faceExplorer(solid, TopAbs_FACE); faceExplorer.More(); faceExplorer.Next()) {
+            const TopoDS_Face face = TopoDS::Face(faceExplorer.Current());
+            const int faceIndex = original_face_map.Add(face);
+            if (faceIndex > static_cast<int>(original_face_to_solid.size())) {
+                original_face_to_solid.resize(static_cast<std::size_t>(faceIndex), -1);
+            }
+            original_face_to_solid[static_cast<std::size_t>(faceIndex - 1)] = solidId;
         }
-
-        bool isConvex = IsEdgeConvex(edge, faces_info);
-        if (isConvex) {
-            explorer.Next();
-            continue;
-        }
-
-        auto ends = EdgeEndpoints(edge);
-
-        bool arc_flag = IsArcOrSpline(edge);
-
-        EdgeInfo edge_info;
-        edge_info.edge = edge;
-        edge_info.ends = ends;
-        edge_info.is_arc_or_spline = arc_flag;
-        edge_info.idx = idx;
-        edge_info.faces_info = faces_info;
-
-        edges_info.push_back(edge_info);
-
-        idx++;
-        explorer.Next();
     }
 
-    GenerateDiscretePointsNormals(edges_info, 8.0);
+    if (solids.empty()) {
+        return edges_info;
+    }
+
+    BRepAlgoAPI_Fuse fuse;
+    TopoDS_Shape fusedShape;
+    const bool hasFuseHistory = solids.size() > 1;
+    if (hasFuseHistory) {
+        TopTools_ListOfShape fuseArguments;
+        TopTools_ListOfShape fuseTools;
+        fuseArguments.Append(solids.front());
+        for (std::size_t solidIndex = 1; solidIndex < solids.size(); ++solidIndex) {
+            fuseTools.Append(solids[solidIndex]);
+        }
+
+        fuse.SetArguments(fuseArguments);
+        fuse.SetTools(fuseTools);
+        fuse.SetToFillHistory(Standard_True);
+        fuse.Build();
+        if (!fuse.IsDone()) {
+            return edges_info;
+        }
+
+        fusedShape = fuse.Shape();
+    } else {
+        fusedShape = solids.front();
+    }
+    if (fusedShape.IsNull()) {
+        return edges_info;
+    }
+
+    TopTools_IndexedMapOfShape fused_face_map;
+    TopExp::MapShapes(fusedShape, TopAbs_FACE, fused_face_map);
+    if (fused_face_map.Extent() == 0) {
+        return edges_info;
+    }
+
+    std::vector<std::unordered_set<int>> face_owners(
+        static_cast<std::size_t>(fused_face_map.Extent()));
+    for (int faceMapIndex = 1; faceMapIndex <= original_face_map.Extent(); ++faceMapIndex) {
+        const TopoDS_Face originalFace = TopoDS::Face(original_face_map(faceMapIndex));
+        const int solidId = original_face_to_solid[static_cast<std::size_t>(faceMapIndex - 1)];
+
+        if (!hasFuseHistory) {
+            const int fusedFaceIndex = fused_face_map.FindIndex(originalFace);
+            if (fusedFaceIndex > 0) {
+                face_owners[static_cast<std::size_t>(fusedFaceIndex - 1)].insert(solidId);
+            }
+            continue;
+        }
+
+        bool mappedToResultFace = false;
+
+        const TopTools_ListOfShape &modifiedFaces = fuse.Modified(originalFace);
+        for (TopTools_ListIteratorOfListOfShape faceIt(modifiedFaces); faceIt.More(); faceIt.Next()) {
+            if (faceIt.Value().ShapeType() != TopAbs_FACE) {
+                continue;
+            }
+            const int fusedFaceIndex = fused_face_map.FindIndex(faceIt.Value());
+            if (fusedFaceIndex <= 0) {
+                continue;
+            }
+            face_owners[static_cast<std::size_t>(fusedFaceIndex - 1)].insert(solidId);
+            mappedToResultFace = true;
+        }
+
+        const TopTools_ListOfShape &generatedFaces = fuse.Generated(originalFace);
+        for (TopTools_ListIteratorOfListOfShape faceIt(generatedFaces); faceIt.More(); faceIt.Next()) {
+            if (faceIt.Value().ShapeType() != TopAbs_FACE) {
+                continue;
+            }
+            const int fusedFaceIndex = fused_face_map.FindIndex(faceIt.Value());
+            if (fusedFaceIndex <= 0) {
+                continue;
+            }
+            face_owners[static_cast<std::size_t>(fusedFaceIndex - 1)].insert(solidId);
+            mappedToResultFace = true;
+        }
+
+        if (!mappedToResultFace && !fuse.IsDeleted(originalFace)) {
+            const int fusedFaceIndex = fused_face_map.FindIndex(originalFace);
+            if (fusedFaceIndex > 0) {
+                face_owners[static_cast<std::size_t>(fusedFaceIndex - 1)].insert(solidId);
+            }
+        }
+    }
+
+    TopTools_IndexedMapOfShape fused_edge_map;
+    TopExp::MapShapes(fusedShape, TopAbs_EDGE, fused_edge_map);
+
+    TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+    TopExp::MapShapesAndAncestors(fusedShape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+
+    const auto curvePointAt = [&](const TopoDS_Edge &edge, double parameter, Point3D *point) {
+        if (point == nullptr) {
+            return false;
+        }
+
+        double first = 0.0;
+        double last = 0.0;
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+        if (curve.IsNull()) {
+            return false;
+        }
+
+        gp_Pnt gpPoint;
+        curve->D0(parameter, gpPoint);
+        *point = Point2Tuple(gpPoint);
+        return true;
+    };
+
+    for (int edgeMapIndex = 1; edgeMapIndex <= fused_edge_map.Extent(); ++edgeMapIndex) {
+        const TopoDS_Edge edge = TopoDS::Edge(fused_edge_map(edgeMapIndex));
+        if (BRep_Tool::Degenerated(edge) || !edge_face_map.Contains(edge)) {
+            continue;
+        }
+
+        FacesInfo facesInfo;
+        const TopTools_ListOfShape &ancestorFaces = edge_face_map.FindFromKey(edge);
+        for (TopTools_ListIteratorOfListOfShape faceIt(ancestorFaces); faceIt.More(); faceIt.Next()) {
+            if (faceIt.Value().ShapeType() != TopAbs_FACE) {
+                continue;
+            }
+            facesInfo.faces.push_back(TopoDS::Face(faceIt.Value()));
+            ++facesInfo.face_count;
+        }
+        if (facesInfo.face_count <= 1) {
+            continue;
+        }
+
+        const int faceIndexA = fused_face_map.FindIndex(facesInfo.faces[0]);
+        const int faceIndexB = fused_face_map.FindIndex(facesInfo.faces[1]);
+        if (faceIndexA <= 0 || faceIndexB <= 0) {
+            continue;
+        }
+
+        const std::unordered_set<int> &ownersA =
+            face_owners[static_cast<std::size_t>(faceIndexA - 1)];
+        const std::unordered_set<int> &ownersB =
+            face_owners[static_cast<std::size_t>(faceIndexB - 1)];
+        if (ownerSetsIntersect(ownersA, ownersB)) {
+            continue;
+        }
+        const std::vector<int> ownerIdsA = sortedOwnerIds(ownersA);
+        const std::vector<int> ownerIdsB = sortedOwnerIds(ownersB);
+
+        double firstParam = 0.0;
+        double lastParam = 0.0;
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, firstParam, lastParam);
+        if (curve.IsNull()) {
+            continue;
+        }
+        if (lastParam < firstParam) {
+            std::swap(firstParam, lastParam);
+        }
+        if (lastParam - firstParam <= kIntervalParameterTolerance) {
+            continue;
+        }
+
+        Point3D edgeStartPoint;
+        Point3D edgeEndPoint;
+        if (!curvePointAt(edge, firstParam, &edgeStartPoint) ||
+            !curvePointAt(edge, lastParam, &edgeEndPoint)) {
+            continue;
+        }
+        if (squaredDistance(edgeStartPoint, edgeEndPoint) <=
+            kVeryShortEdgeLengthMm * kVeryShortEdgeLengthMm) {
+            continue;
+        }
+
+        if (IsEdgeConvex(edge, facesInfo)) {
+            continue;
+        }
+
+        EdgeInfo edgeInfo;
+        const bool isArcOrSpline = IsArcOrSpline(edge);
+        edgeInfo.edge = edge;
+        edgeInfo.idx = static_cast<int>(edges_info.size());
+        edgeInfo.ends = std::make_pair(edgeStartPoint, edgeEndPoint);
+        edgeInfo.is_arc_or_spline = isArcOrSpline;
+        edgeInfo.faces_info = facesInfo;
+        edgeInfo.source_edge_idx = edgeMapIndex - 1;
+        edgeInfo.parameter_begin = firstParam;
+        edgeInfo.parameter_end = lastParam;
+        edgeInfo.segment_start_point = edgeStartPoint;
+        edgeInfo.segment_end_point = edgeEndPoint;
+        edgeInfo.adjacent_face_owner_ids_a = ownerIdsA;
+        edgeInfo.adjacent_face_owner_ids_b = ownerIdsB;
+        edges_info.push_back(edgeInfo);
+
+        EdgeProcessingCache edgeCache;
+        edgeCache.faces_info = facesInfo;
+        edgeCache.endpoints = std::make_pair(edgeStartPoint, edgeEndPoint);
+        edgeCache.is_arc_or_spline = isArcOrSpline;
+        edgeCache.parameter_begin = firstParam;
+        edgeCache.parameter_end = lastParam;
+        edge_caches.push_back(edgeCache);
+    }
+
+    GenerateDiscretePointsNormals(edge_caches, edges_info, 8.0);
 
     return edges_info;
 }
@@ -664,6 +926,5 @@ bool ModelProcessing::IsEdgeConvex(const TopoDS_Edge& edge, const FacesInfo &fac
             }
         }
     }
-
+    return false;
 }
-

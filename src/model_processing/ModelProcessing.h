@@ -1,4 +1,4 @@
-﻿#ifndef MODELPROCESSING_H
+#ifndef MODELPROCESSING_H
 #define MODELPROCESSING_H
 
 #include <TopoDS_Shape.hxx>
@@ -20,6 +20,7 @@
 #include <TopoDS.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <memory>
 
 #include "common.h"
 
@@ -50,6 +51,11 @@ public:
     std::pair<std::vector<Point3D>, std::vector<double>> EqualChordLengthSampleCurve(const Handle(Geom_Curve)& curve_handle, double f, double l, double chord_length);
 
     std::pair<std::vector<Point3D>, std::vector<double>> DiscretizeEdgeByType(const TopoDS_Edge& edge, bool is_arc_or_spline, double linear_step = 1.0);
+    std::pair<std::vector<Point3D>, std::vector<double>> DiscretizeEdgeByType(const TopoDS_Edge& edge,
+                                                                               bool is_arc_or_spline,
+                                                                               double first_param,
+                                                                               double last_param,
+                                                                               double linear_step);
 
     std::tuple<Normal3D, bool, UVParams> NormalOnFaceAtPoint(const TopoDS_Face& face, const Point3D& point_xyz);
 
@@ -59,10 +65,6 @@ public:
 
     TopoDS_Edge MakeVectorEdge(const Point3D& p, const Normal3D& vec, double scale = 1.0);
 
-    void GenerateDiscretePointsNormals(std::vector<EdgeInfo>& edges_info, double step);
-
-    FacesInfo GetFacesInfo(const TopoDS_Edge& edge, const TopoDS_Shape& full_shape);
-
     std::pair<Point3D, Point3D> EdgeEndpoints(const TopoDS_Edge& edge);
 
     bool IsArcOrSpline(const TopoDS_Edge& edge);
@@ -70,6 +72,20 @@ public:
     std::vector<EdgeInfo> ExtractEdgesFromStep(const TopoDS_Shape& shape);
 
     bool IsEdgeConvex(const TopoDS_Edge& edge, const FacesInfo &faces_info);
+
+private:
+    struct EdgeProcessingCache
+    {
+        FacesInfo faces_info;
+        std::pair<Point3D, Point3D> endpoints;
+        bool is_arc_or_spline = false;
+        double parameter_begin = 0.0;
+        double parameter_end = 0.0;
+    };
+
+    void GenerateDiscretePointsNormals(const std::vector<EdgeProcessingCache>& edgeCaches,
+                                       std::vector<EdgeInfo>& edges_info,
+                                       double step);
 
 };
 

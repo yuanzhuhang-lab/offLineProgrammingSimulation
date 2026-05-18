@@ -1,18 +1,28 @@
-﻿#ifndef COMMON_H
+#ifndef COMMON_H
 #define COMMON_H
 
-#include <TopoDS_Face.hxx>
+#include <cstddef>
+#include <limits>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <Eigen/Dense>
+#include <vtkActor.h>
 #include <vtkAssembly.h>
 #include <vtkSmartPointer.h>
 
 using Matrix4x4 = Eigen::Matrix<double, 4, 4>;
+
 struct Point3D {
     double x, y, z;
     Point3D() : x(0), y(0), z(0) {}
     Point3D(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
 };
+
 struct Bounds3D {
     double xmin, xmax;
     double ymin, ymax;
@@ -22,82 +32,98 @@ struct Bounds3D {
         xmax = ymax = zmax = std::numeric_limits<double>::quiet_NaN();
     }
 };
+
 struct Normal3D {
     double x, y, z;
     Normal3D() : x(0), y(0), z(0) {}
     Normal3D(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
 
-    // 向量加法
     Normal3D operator+(const Normal3D& other) const {
         return Normal3D(x + other.x, y + other.y, z + other.z);
     }
 
-    // 标量乘法
     friend Normal3D operator*(double scalar, const Normal3D& vec) {
         return Normal3D(scalar * vec.x, scalar * vec.y, scalar * vec.z);
     }
 };
+
 struct UVParams {
     double u, v;
     UVParams() : u(0), v(0) {}
     UVParams(double u_, double v_) : u(u_), v(v_) {}
 };
+
 struct FacesInfo {
     std::vector<TopoDS_Face> faces;
     int face_count;
     FacesInfo() : face_count(0) {}
 };
+
 struct EdgeInfo {
     TopoDS_Edge edge;
     std::pair<Point3D, Point3D> ends;
     bool is_arc_or_spline;
     int idx;
     FacesInfo faces_info;
+    int source_edge_idx;
+    double parameter_begin;
+    double parameter_end;
+    Point3D segment_start_point;
+    Point3D segment_end_point;
+    std::vector<int> adjacent_face_owner_ids_a;
+    std::vector<int> adjacent_face_owner_ids_b;
     std::vector<Point3D> sample_points;
     std::vector<std::tuple<Normal3D, Normal3D, Normal3D>> normals;
 
-    EdgeInfo() : is_arc_or_spline(false), idx(0) {}
+    EdgeInfo()
+        : is_arc_or_spline(false),
+          idx(0),
+          source_edge_idx(-1),
+          parameter_begin(0.0),
+          parameter_end(0.0)
+    {
+    }
 };
 
 struct CoordinateSystem {
-    Point3D origin;     // 原点坐标
-    Normal3D x_axis;     // X轴归一化向量
-    Normal3D y_axis;     // Y轴归一化向量
-    Normal3D z_axis;     // Z轴归一化向量
-    Matrix4x4 transform_matrix; // 相对于世界坐标系的变换矩阵
+    Point3D origin;
+    Normal3D x_axis;
+    Normal3D y_axis;
+    Normal3D z_axis;
+    Matrix4x4 transform_matrix;
 };
 
 struct DHJoint {
-    double a;      // link length
-    double alpha;  // link twist (radians)
-    double d;      // link offset
-    double theta;  // joint angle (radians) -- 初始值
+    double a;
+    double alpha;
+    double d;
+    double theta;
     std::string stlFile;
     double color[3];
-    vtkSmartPointer<vtkAssembly> assembly; // 用于该关节的 assembly（相对父）
-    vtkSmartPointer<vtkActor> meshActor;   // 仅 mesh
+    vtkSmartPointer<vtkAssembly> assembly;
+    vtkSmartPointer<vtkActor> meshActor;
 };
 
 struct DHParameters {
-    double a;     // 连杆长度
-    double alpha; // 连杆扭角
-    double d;     // 连杆偏距
-    double theta; // 关节角度
+    double a;
+    double alpha;
+    double d;
+    double theta;
 };
 
-struct Bounds { // 定义 Bounds 结构体用于保存每维上下界
-    std::vector<double> lb, ub; // 成员：每维下界和上界向量
-    Bounds() {} // 默认构造函数（空）
-    Bounds(size_t dim, double lo, double hi) : lb(dim, lo), ub(dim, hi) {} // 按维度与范围初始化构造函数
+struct Bounds {
+    std::vector<double> lb, ub;
+    Bounds() {}
+    Bounds(size_t dim, double lo, double hi) : lb(dim, lo), ub(dim, hi) {}
 };
 
-struct Particle { // 定义粒子结构体
-    std::vector<double> x;    // 位置向量 x
-    std::vector<double> v;    // 速度向量 v
-    std::vector<double> pbest; // 个体最优位置 pbest
-    double pbest_val; // 个体最优值 pbest_val
+struct Particle {
+    std::vector<double> x;
+    std::vector<double> v;
+    std::vector<double> pbest;
+    double pbest_val;
 
-    Particle() : pbest_val(std::numeric_limits<double>::infinity()) {} // 构造函数：初始化 pbest_val 为 +inf
+    Particle() : pbest_val(std::numeric_limits<double>::infinity()) {}
 };
 
 #endif // COMMON_H

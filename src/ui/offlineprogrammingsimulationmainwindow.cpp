@@ -1,7 +1,29 @@
 ﻿#include "offlineprogrammingsimulationmainwindow.h"
 #include "ui_offlineprogrammingsimulationmainwindow.h"
 
+#include <vtkTextProperty.h>
+
 namespace {
+vtkSmartPointer<vtkBillboardTextActor3D> createFixedSizeAxisLabel(const char* text,
+                                                                  double x,
+                                                                  double y,
+                                                                  double z,
+                                                                  double r,
+                                                                  double g,
+                                                                  double b)
+{
+    vtkSmartPointer<vtkBillboardTextActor3D> label =
+        vtkSmartPointer<vtkBillboardTextActor3D>::New();
+    label->SetInput(text);
+    label->SetPosition(x, y, z);
+    label->PickableOff();
+    label->GetTextProperty()->SetFontSize(18);
+    label->GetTextProperty()->SetColor(r, g, b);
+    label->GetTextProperty()->SetBold(1);
+    label->GetTextProperty()->SetJustificationToCentered();
+    label->GetTextProperty()->SetVerticalJustificationToCentered();
+    return label;
+}
 const char* motionTaskTypeToString(MotionTaskType taskType)
 {
     switch (taskType) {
@@ -60,6 +82,17 @@ QString formatVector3dForInfo(const Vector3d& value)
         .arg(value.y(), 0, 'f', 3)
         .arg(value.z(), 0, 'f', 3);
 }
+
+Matrix4d projectorEnd2CamMatrix()
+{
+    Matrix4d end2camMatrix;
+    end2camMatrix <<
+        1.0, 0.0, 0.0, -52.4276,
+        0.0, 0.866, -0.5, -197.74489,
+        0.0, 0.5,  0.866, 260.57368,
+        0.0, 0.0,  0.0,   1.0;
+    return end2camMatrix;
+}
 }
 
 OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(QWidget *parent) :
@@ -68,6 +101,26 @@ OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(Q
 {
     ui->setupUi(this);
     this->setWindowTitle("离线编程仿真系统");
+    ui->textEdit->setEnabled(true);
+    ui->textEdit->setReadOnly(true);
+    ui->textEdit->setFixedHeight(220);
+    for (auto& spinBox : manualBaseSpinBoxes_) {
+        spinBox = nullptr;
+    }
+    for (auto& spinBox : manualViewPositionSpinBoxes_) {
+        spinBox = nullptr;
+    }
+    for (auto& spinBox : manualViewAxisSpinBoxes_) {
+        spinBox = nullptr;
+    }
+    manualSolveIkButton_ = nullptr;
+    manualNextIkSolutionButton_ = nullptr;
+    manualIkStatusLabel_ = nullptr;
+    manualProjectorPose_ = Matrix4d::Identity();
+    manualIkBaseX_ = 0.0;
+    manualIkBaseY_ = 0.0;
+    manualIkBaseZ_ = 0.0;
+    manualIkSolutionIndex_ = -1;
 
     initVTKDisplay();
 
@@ -99,9 +152,7 @@ OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(Q
     currentMotionTaskType_ = MotionTaskType::TRANSITION;
     currentHasProjectorPose_ = false;
     currentProjectorPose_ = Matrix4d::Identity();
-    currentHasStructuredLightGeometry_ = false;
     currentFrustumPoints_.fill(Vector3d::Zero());
-    currentCoveredVertices_.clear();
 
     currentWeldingType_ = WeldingType::PLATE_TO_PLATE;
 
@@ -113,7 +164,6 @@ OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(Q
     structuredLightAspectRatio_ = 0.8928;
     structuredLightNearDist_ = 350.0;
     structuredLightFarDist_ = 600.0;
-    structuredLightCoverageSampleStep_ = 20.0;
     structuredLightProjectorCamera_ = vtkSmartPointer<vtkCamera>::New();
     structuredLightProjectorCamera_->SetViewAngle(structuredLightFovY_);
     structuredLightProjectorCamera_->SetClippingRange(structuredLightNearDist_, structuredLightFarDist_);
@@ -131,6 +181,8 @@ OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(Q
     if (!robotConfig->loadFromFile(configPath)) {
         qDebug() << "Failed to load robot config from:" << QString::fromStdString(configPath);
     }
+
+    initManualViewpointIkPanel();
 
     jointAssemblies.clear();
 }
@@ -220,7 +272,6 @@ void OffLineProgrammingSimulationMainWindow::loadingModel(const QString &fileNam
 
     stlPolyData->SetPoints(points);
     stlPolyData->SetPolys(triangles);
-    workpiecePolyData_ = stlPolyData;
     hasLastStructuredLightProjectorPose_ = false;
 
     vtkSmartPointer<vtkPolyDataMapper> mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
@@ -246,12 +297,17 @@ void OffLineProgrammingSimulationMainWindow::loadingModel(const QString &fileNam
     axesActor->SetConeResolution(30);
     axesActor->SetCylinderResolution(100);
 
-    axesActor->SetXAxisLabelText("X");
-    axesActor->SetYAxisLabelText("Y");
-    axesActor->SetZAxisLabelText("Z");
-    axesActor->AxisLabelsOn();
+    axesActor->AxisLabelsOff();
 
     renderer->AddActor(axesActor);
+
+    worldAxisLabels_.clear();
+    worldAxisLabels_.push_back(createFixedSizeAxisLabel("X", 115.0, 0.0, 0.0, 1.0, 0.0, 0.0));
+    worldAxisLabels_.push_back(createFixedSizeAxisLabel("Y", 0.0, 115.0, 0.0, 0.0, 1.0, 0.0));
+    worldAxisLabels_.push_back(createFixedSizeAxisLabel("Z", 0.0, 0.0, 115.0, 0.0, 0.4, 1.0));
+    for (const auto& label : worldAxisLabels_) {
+        renderer->AddActor(label);
+    }
 
     renderer2 = vtkRenderer::New();
     actor->GetProperty()->SetOpacity(0.8);
@@ -259,6 +315,9 @@ void OffLineProgrammingSimulationMainWindow::loadingModel(const QString &fileNam
     renderer2->SetLayer(1);
     renderer2->SetBackground(0, 0, 0);
     renderer2->AddActor(axesActor);
+    for (const auto& label : worldAxisLabels_) {
+        renderer2->AddActor(label);
+    }
     addStructuredLightActorsToRenderers();
 
     renderer2->SetActiveCamera(camera);
@@ -753,14 +812,21 @@ void OffLineProgrammingSimulationMainWindow::loadingRobot()
     baseAxes->SetConeResolution(30);
     baseAxes->SetCylinderResolution(100);
 
-    baseAxes->SetXAxisLabelText("X");
-    baseAxes->SetYAxisLabelText("Y");
-    baseAxes->SetZAxisLabelText("Z");
-    baseAxes->AxisLabelsOn();
+    baseAxes->AxisLabelsOff();
     baseAxes->SetUserTransform(baseTransform);
 
     renderer->AddActor(baseAxes);
     renderer2->AddActor(baseAxes);
+
+    baseAxisLabels_.clear();
+    baseAxisLabels_.push_back(createFixedSizeAxisLabel("X", 115.0, 0.0, 0.0, 1.0, 0.0, 0.0));
+    baseAxisLabels_.push_back(createFixedSizeAxisLabel("Y", 0.0, 115.0, 0.0, 0.0, 1.0, 0.0));
+    baseAxisLabels_.push_back(createFixedSizeAxisLabel("Z", 0.0, 0.0, 115.0, 0.0, 0.4, 1.0));
+    for (const auto& label : baseAxisLabels_) {
+        label->SetUserTransform(baseTransform);
+        renderer->AddActor(label);
+        renderer2->AddActor(label);
+    }
 
     renderer->GetRenderWindow()->Render();
     renderer2->GetRenderWindow()->Render();
@@ -856,9 +922,9 @@ void OffLineProgrammingSimulationMainWindow::calculateHanju()
     }
 }
 
-void OffLineProgrammingSimulationMainWindow::SetJointAnglesDeg(const Vector6d &anglesDeg, double baseX, double baseY, double baseZ, MotionMode mode, MotionTaskType taskType, const Matrix4d* projectorPose, const std::array<Vector3d, 5>* frustumPoints, const std::vector<Vector3d>* coveredVertices, const QString& planningInfo)
+void OffLineProgrammingSimulationMainWindow::SetJointAnglesDeg(const Vector6d &anglesDeg, double baseX, double baseY, double baseZ, MotionMode mode, MotionTaskType taskType, const Matrix4d* projectorPose, const std::array<Vector3d, 5>* frustumPoints, const QString& planningInfo)
 {
-    MotionTarget target(anglesDeg, baseX, baseY, baseZ, mode, taskType, projectorPose, frustumPoints, coveredVertices, planningInfo);
+    MotionTarget target(anglesDeg, baseX, baseY, baseZ, mode, taskType, projectorPose, frustumPoints, planningInfo);
     // 将运动请求加入队列
     motionQueue_.push(target);
 
@@ -961,6 +1027,271 @@ void OffLineProgrammingSimulationMainWindow::initQSliders()
     updateJointAnglesLabel();
 }
 
+void OffLineProgrammingSimulationMainWindow::initManualViewpointIkPanel()
+{
+    auto panel = new QGroupBox(u8"手动视点IK", this);
+    auto grid = new QGridLayout(panel);
+    grid->setContentsMargins(8, 8, 8, 8);
+    grid->setHorizontalSpacing(6);
+    grid->setVerticalSpacing(4);
+
+    auto makeSpinBox = [panel](double value) {
+        auto spinBox = new QDoubleSpinBox(panel);
+        spinBox->setRange(-100000.0, 100000.0);
+        spinBox->setDecimals(3);
+        spinBox->setSingleStep(1.0);
+        spinBox->setValue(value);
+        spinBox->setMinimumWidth(72);
+        return spinBox;
+    };
+
+    grid->addWidget(new QLabel(u8"基座(mm)", panel), 0, 0);
+    const char* xyzLabels[3] = {"X", "Y", "Z"};
+    const double baseDefaults[3] = {baseAssemblyX_, baseAssemblyY_, baseAssemblyZ_};
+    for (int i = 0; i < 3; ++i) {
+        grid->addWidget(new QLabel(xyzLabels[i], panel), 0, i + 1);
+        manualBaseSpinBoxes_[i] = makeSpinBox(baseDefaults[i]);
+        grid->addWidget(manualBaseSpinBoxes_[i], 1, i + 1);
+    }
+
+    grid->addWidget(new QLabel(u8"视点(mm)", panel), 2, 0);
+    for (int i = 0; i < 3; ++i) {
+        manualViewPositionSpinBoxes_[i] = makeSpinBox(0.0);
+        grid->addWidget(manualViewPositionSpinBoxes_[i], 2, i + 1);
+    }
+
+    const char* axisNames[3] = {u8"右", u8"上", u8"前"};
+    const double axisDefaults[9] = {
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+    };
+    for (int axis = 0; axis < 3; ++axis) {
+        grid->addWidget(new QLabel(axisNames[axis], panel), 3 + axis, 0);
+        for (int coord = 0; coord < 3; ++coord) {
+            const int index = axis * 3 + coord;
+            manualViewAxisSpinBoxes_[index] = makeSpinBox(axisDefaults[index]);
+            manualViewAxisSpinBoxes_[index]->setSingleStep(0.1);
+            grid->addWidget(manualViewAxisSpinBoxes_[index], 3 + axis, coord + 1);
+        }
+    }
+
+    manualSolveIkButton_ = new QPushButton(u8"求IK并移动", panel);
+    manualNextIkSolutionButton_ = new QPushButton(u8"下一个解", panel);
+    manualNextIkSolutionButton_->setEnabled(false);
+    manualIkStatusLabel_ = new QLabel(u8"未求解", panel);
+    manualIkStatusLabel_->setWordWrap(true);
+
+    grid->addWidget(manualSolveIkButton_, 6, 0, 1, 2);
+    grid->addWidget(manualNextIkSolutionButton_, 6, 2, 1, 2);
+    grid->addWidget(manualIkStatusLabel_, 7, 0, 1, 4);
+
+    connect(manualSolveIkButton_, &QPushButton::clicked,
+            this, &OffLineProgrammingSimulationMainWindow::onManualViewpointIkSolveClicked);
+    connect(manualNextIkSolutionButton_, &QPushButton::clicked,
+            this, &OffLineProgrammingSimulationMainWindow::onManualViewpointIkNextClicked);
+
+    ui->verticalLayout_9->addWidget(panel);
+}
+
+bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& projectorPose) const
+{
+    Vector3d position(manualViewPositionSpinBoxes_[0]->value(),
+                      manualViewPositionSpinBoxes_[1]->value(),
+                      manualViewPositionSpinBoxes_[2]->value());
+    Vector3d right(manualViewAxisSpinBoxes_[0]->value(),
+                   manualViewAxisSpinBoxes_[1]->value(),
+                   manualViewAxisSpinBoxes_[2]->value());
+    Vector3d up(manualViewAxisSpinBoxes_[3]->value(),
+                manualViewAxisSpinBoxes_[4]->value(),
+                manualViewAxisSpinBoxes_[5]->value());
+    const Vector3d inputForward(manualViewAxisSpinBoxes_[6]->value(),
+                                manualViewAxisSpinBoxes_[7]->value(),
+                                manualViewAxisSpinBoxes_[8]->value());
+    Vector3d forward = inputForward;
+
+    constexpr double axisEps = 1e-8;
+    if (right.norm() <= axisEps || up.norm() <= axisEps || forward.norm() <= axisEps) {
+        QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
+                             u8"输入错误", u8"右/上/前三个方向轴都必须是非零向量。");
+        return false;
+    }
+
+    right.normalize();
+    forward.normalize();
+
+    up = up - right.dot(up) * right;
+    if (up.norm() <= axisEps) {
+        QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
+                             u8"输入错误", u8"投影仪“上”方向不能与“右”方向平行。");
+        return false;
+    }
+    up.normalize();
+
+    Vector3d orthogonalForward = right.cross(up);
+    if (orthogonalForward.norm() <= axisEps) {
+        QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
+                             u8"输入错误", u8"投影仪右/上方向无法构成有效坐标系。");
+        return false;
+    }
+    orthogonalForward.normalize();
+
+    constexpr double minForwardAlignment = 0.3;
+    const double forwardAlignment = orthogonalForward.dot(forward);
+    if (std::abs(forwardAlignment) < minForwardAlignment) {
+        QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
+                             u8"输入错误", u8"投影仪“前”方向与“右×上”方向偏差过大，请检查坐标轴输入。");
+        return false;
+    }
+    if (forwardAlignment < 0.0) {
+        up = -up;
+        orthogonalForward = -orthogonalForward;
+    }
+
+    projectorPose = Matrix4d::Identity();
+    projectorPose.block<3,1>(0,0) = right;
+    projectorPose.block<3,1>(0,1) = up;
+    projectorPose.block<3,1>(0,2) = orthogonalForward;
+    projectorPose.block<3,1>(0,3) = position;
+    return true;
+}
+
+void OffLineProgrammingSimulationMainWindow::onManualViewpointIkSolveClicked()
+{
+    if (!baseAssembly || !renderer || !renderer2) {
+        QMessageBox::warning(this, u8"求解失败", u8"请先加载模型和机器人。");
+        return;
+    }
+
+    Matrix4d projectorPose;
+    if (!readManualProjectorPose(projectorPose)) {
+        return;
+    }
+
+    manualIkBaseX_ = manualBaseSpinBoxes_[0]->value();
+    manualIkBaseY_ = manualBaseSpinBoxes_[1]->value();
+    manualIkBaseZ_ = manualBaseSpinBoxes_[2]->value();
+    manualProjectorPose_ = projectorPose;
+
+    Matrix4d worldToBase;
+    worldToBase <<
+        1.0,  0.0,  0.0, -manualIkBaseX_,
+        0.0, -1.0,  0.0,  manualIkBaseY_,
+        0.0,  0.0, -1.0,  manualIkBaseZ_,
+        0.0,  0.0,  0.0,  1.0;
+
+    const Matrix4d tcpWorldPose = projectorPose * projectorEnd2CamMatrix().inverse();
+    const Matrix4d tcpPoseInBase = worldToBase * tcpWorldPose;
+
+    PoseEstimation ikSolver(*robotConfig, 30, 100, 0.7, 1.8, 1.8);
+    std::vector<Vector6d> allSolutions = ikSolver.inverseKinematics(tcpPoseInBase);
+    manualIkSolutions_.clear();
+    for (const auto& solution : allSolutions) {
+        if (ikSolver.isValidSolution(solution, ikSolver.qlimits)) {
+            manualIkSolutions_.push_back(solution);
+        }
+    }
+
+    if (manualIkSolutions_.empty()) {
+        manualIkSolutionIndex_ = -1;
+        manualNextIkSolutionButton_->setEnabled(false);
+        manualIkStatusLabel_->setText(QString(u8"无满足关节限位的逆解，原始逆解数：%1").arg(allSolutions.size()));
+        QMessageBox::information(this, u8"求解结果", u8"没有满足关节限位的逆解。");
+        return;
+    }
+
+    manualIkSolutionIndex_ = 0;
+    manualNextIkSolutionButton_->setEnabled(manualIkSolutions_.size() > 1);
+    applyManualIkSolution(manualIkSolutionIndex_);
+}
+
+void OffLineProgrammingSimulationMainWindow::onManualViewpointIkNextClicked()
+{
+    if (manualIkSolutions_.empty()) {
+        return;
+    }
+
+    manualIkSolutionIndex_ = (manualIkSolutionIndex_ + 1) % static_cast<int>(manualIkSolutions_.size());
+    applyManualIkSolution(manualIkSolutionIndex_);
+}
+
+void OffLineProgrammingSimulationMainWindow::applyManualIkSolution(int solutionIndex)
+{
+    if (solutionIndex < 0 || solutionIndex >= static_cast<int>(manualIkSolutions_.size())) {
+        return;
+    }
+
+    smoothMotionTimer_->stop();
+    while (!motionQueue_.empty()) {
+        motionQueue_.pop();
+    }
+    isProcessingQueue_ = false;
+    isPaused_ = false;
+    currentMotionMode_ = MotionMode::JOINT_AND_BASE;
+    currentMotionTaskType_ = MotionTaskType::CAMERA_CAPTURE;
+    currentHasProjectorPose_ = true;
+    currentProjectorPose_ = manualProjectorPose_;
+    buildHalfFrustumPoints(currentProjectorPose_, currentFrustumPoints_);
+
+    baseAssemblyX_ = manualIkBaseX_;
+    baseAssemblyY_ = manualIkBaseY_;
+    baseAssemblyZ_ = manualIkBaseZ_;
+    startAnglesDeg_ = manualIkSolutions_[solutionIndex];
+    targetAnglesDeg_ = startAnglesDeg_;
+
+    UpdateJointTransforms(startAnglesDeg_);
+    updateBaseAssemblyTransform();
+    applyHalfFrustumActors(currentFrustumPoints_, currentProjectorPose_);
+    setStructuredLightActorsVisible(true);
+    updateJointAnglesLabel();
+    updateTransformMatrixLabel();
+
+    QSlider* jointSliders[6] = {
+        ui->horizontalSlider_4,
+        ui->horizontalSlider_5,
+        ui->horizontalSlider_6,
+        ui->horizontalSlider_7,
+        ui->horizontalSlider_8,
+        ui->horizontalSlider_9
+    };
+    for (int i = 0; i < 6; ++i) {
+        QSignalBlocker blocker(jointSliders[i]);
+        const int valueDeg = static_cast<int>(std::round(startAnglesDeg_[i] * 180.0 / M_PI));
+        if (valueDeg >= jointSliders[i]->minimum() && valueDeg <= jointSliders[i]->maximum()) {
+            jointSliders[i]->setValue(valueDeg);
+        }
+    }
+
+    QSlider* baseSliders[3] = {ui->horizontalSlider, ui->horizontalSlider_2, ui->horizontalSlider_3};
+    const double baseValues[3] = {baseAssemblyX_, baseAssemblyY_, baseAssemblyZ_};
+    for (int i = 0; i < 3; ++i) {
+        QSignalBlocker blocker(baseSliders[i]);
+        const int sliderValue = static_cast<int>(std::round(baseValues[i]));
+        if (sliderValue >= baseSliders[i]->minimum() && sliderValue <= baseSliders[i]->maximum()) {
+            baseSliders[i]->setValue(sliderValue);
+        }
+    }
+
+    if (collisionDetector) {
+        performCollisionDetection();
+    }
+
+    const Vector6d& q = manualIkSolutions_[solutionIndex];
+    manualIkStatusLabel_->setText(
+        QString(u8"有效解 %1 / %2：[%3, %4, %5, %6, %7, %8] deg")
+            .arg(solutionIndex + 1)
+            .arg(manualIkSolutions_.size())
+            .arg(q[0] * 180.0 / M_PI, 0, 'f', 2)
+            .arg(q[1] * 180.0 / M_PI, 0, 'f', 2)
+            .arg(q[2] * 180.0 / M_PI, 0, 'f', 2)
+            .arg(q[3] * 180.0 / M_PI, 0, 'f', 2)
+            .arg(q[4] * 180.0 / M_PI, 0, 'f', 2)
+            .arg(q[5] * 180.0 / M_PI, 0, 'f', 2));
+
+    renderer->GetRenderWindow()->Render();
+    renderer2->GetRenderWindow()->Render();
+}
+
 void OffLineProgrammingSimulationMainWindow::on_horizontalSlider_valueChanged(int value)
 {
     baseAssemblyX_ = value;
@@ -1000,6 +1331,9 @@ void OffLineProgrammingSimulationMainWindow::updateBaseAssemblyTransform()
 
     baseAssembly->SetUserTransform(newTransform);
     baseAxes->SetUserTransform(newTransform);
+    for (const auto& label : baseAxisLabels_) {
+        label->SetUserTransform(newTransform);
+    }
 
     updateTransformMatrix();
 
@@ -1037,8 +1371,6 @@ void OffLineProgrammingSimulationMainWindow::processNextMotion()
         isPaused_ = false;
         currentMotionTaskType_ = MotionTaskType::TRANSITION;
         currentHasProjectorPose_ = false;
-        currentHasStructuredLightGeometry_ = false;
-        currentCoveredVertices_.clear();
         currentFrustumPoints_.fill(Vector3d::Zero());
         setStructuredLightActorsVisible(false);
         if (ui && ui->toolButton_13) {
@@ -1061,25 +1393,16 @@ void OffLineProgrammingSimulationMainWindow::processNextMotion()
     if (currentHasProjectorPose_) {
         currentProjectorPose_ = nextTarget.projectorPose;
     }
-    currentHasStructuredLightGeometry_ = nextTarget.hasStructuredLightGeometry;
     currentFrustumPoints_ = nextTarget.frustumPoints;
-    currentCoveredVertices_ = nextTarget.coveredVertices;
     if (currentMotionTaskType_ == MotionTaskType::CAMERA_CAPTURE) {
         if (!currentHasProjectorPose_) {
             currentProjectorPose_ = toolTransformMatrix_;
             currentHasProjectorPose_ = true;
         }
-        if (currentHasStructuredLightGeometry_) {
-            applyHalfFrustumActors(currentFrustumPoints_, currentProjectorPose_);
-            applyStructuredLightCoveredGeometry(currentCoveredVertices_);
-            setStructuredLightActorsVisible(true);
-        } else {
-            std::array<Vector3d, 5> frustumPoints;
-            buildHalfFrustumPoints(currentProjectorPose_, frustumPoints);
-            applyHalfFrustumActors(frustumPoints, currentProjectorPose_);
-            applyStructuredLightCoveredGeometry({});
-            setStructuredLightActorsVisible(true);
-        }
+        std::array<Vector3d, 5> frustumPoints;
+        buildHalfFrustumPoints(currentProjectorPose_, frustumPoints);
+        applyHalfFrustumActors(frustumPoints, currentProjectorPose_);
+        setStructuredLightActorsVisible(true);
         if (renderer && renderer->GetRenderWindow()) {
             renderer->GetRenderWindow()->Render();
         }
@@ -1363,13 +1686,6 @@ void OffLineProgrammingSimulationMainWindow::addStructuredLightActorsToRenderers
         halfFrustumLineActor_->GetProperty()->SetLighting(false);
     }
 
-    if (!structuredLightCoveredActor_) {
-        structuredLightCoveredActor_ = vtkSmartPointer<vtkActor>::New();
-        structuredLightCoveredActor_->GetProperty()->SetColor(1.0, 0.85, 0.0);
-        structuredLightCoveredActor_->GetProperty()->SetOpacity(1.0);
-        structuredLightCoveredActor_->GetProperty()->SetLighting(false);
-    }
-
     if (!projectorPointActor_) {
         projectorPointActor_ = vtkSmartPointer<vtkActor>::New();
         projectorPointActor_->GetProperty()->SetColor(1.0, 0.2, 0.0);
@@ -1388,7 +1704,6 @@ void OffLineProgrammingSimulationMainWindow::addStructuredLightActorsToRenderers
         if (renderer) {
             renderer->AddActor(halfFrustumActor_);
             renderer->AddActor(halfFrustumLineActor_);
-            renderer->AddActor(structuredLightCoveredActor_);
             renderer->AddActor(projectorPointActor_);
             renderer->AddActor(projectorDirectionActor_);
             added = true;
@@ -1397,7 +1712,6 @@ void OffLineProgrammingSimulationMainWindow::addStructuredLightActorsToRenderers
         if (renderer2) {
             renderer2->AddActor(halfFrustumActor_);
             renderer2->AddActor(halfFrustumLineActor_);
-            renderer2->AddActor(structuredLightCoveredActor_);
             renderer2->AddActor(projectorPointActor_);
             renderer2->AddActor(projectorDirectionActor_);
             added = true;
@@ -1412,7 +1726,6 @@ void OffLineProgrammingSimulationMainWindow::setStructuredLightActorsVisible(boo
 {
     if (halfFrustumActor_) halfFrustumActor_->SetVisibility(visible);
     if (halfFrustumLineActor_) halfFrustumLineActor_->SetVisibility(visible);
-    if (structuredLightCoveredActor_) structuredLightCoveredActor_->SetVisibility(visible);
     if (projectorPointActor_) projectorPointActor_->SetVisibility(visible);
     if (projectorDirectionActor_) projectorDirectionActor_->SetVisibility(visible);
 }
@@ -1429,11 +1742,6 @@ void OffLineProgrammingSimulationMainWindow::updateStructuredLightVisualization(
                        (projectorPose - lastStructuredLightProjectorPose_).cwiseAbs().maxCoeff() > 1e-6;
     if (poseChanged) {
         updateHalfFrustumActors(projectorPose);
-        if (currentHasStructuredLightGeometry_) {
-            applyStructuredLightCoveredGeometry(currentCoveredVertices_);
-        } else {
-            applyStructuredLightCoveredGeometry({});
-        }
         lastStructuredLightProjectorPose_ = projectorPose;
         hasLastStructuredLightProjectorPose_ = true;
     }
@@ -1557,245 +1865,9 @@ void OffLineProgrammingSimulationMainWindow::updateHalfFrustumActors(const Matri
     applyHalfFrustumActors(frustumPoints, projectorPose);
 }
 
-void OffLineProgrammingSimulationMainWindow::applyStructuredLightCoveredGeometry(const std::vector<Vector3d>& coveredVertices)
-{
-    auto coveredPoints = vtkSmartPointer<vtkPoints>::New();
-    auto coveredPolys = vtkSmartPointer<vtkCellArray>::New();
 
-    for (size_t i = 0; i + 2 < coveredVertices.size(); i += 3) {
-        vtkIdType ids[3];
-        ids[0] = coveredPoints->InsertNextPoint(coveredVertices[i + 0].x(), coveredVertices[i + 0].y(), coveredVertices[i + 0].z());
-        ids[1] = coveredPoints->InsertNextPoint(coveredVertices[i + 1].x(), coveredVertices[i + 1].y(), coveredVertices[i + 1].z());
-        ids[2] = coveredPoints->InsertNextPoint(coveredVertices[i + 2].x(), coveredVertices[i + 2].y(), coveredVertices[i + 2].z());
-        coveredPolys->InsertNextCell(3, ids);
-    }
 
-    auto coveredPolyData = vtkSmartPointer<vtkPolyData>::New();
-    coveredPolyData->SetPoints(coveredPoints);
-    coveredPolyData->SetPolys(coveredPolys);
 
-    auto coveredMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    coveredMapper->SetInputData(coveredPolyData);
-    coveredMapper->SetResolveCoincidentTopologyToPolygonOffset();
-    structuredLightCoveredActor_->SetMapper(coveredMapper);
-}
-
-bool OffLineProgrammingSimulationMainWindow::isPointInsideHalfFrustum(const Vector3d& point, const Vector3d& position, const Vector3d& right, const Vector3d& up, const Vector3d& forward) const
-{
-    Vector3d v = point - position;
-    double z = v.dot(forward);
-    if (z < structuredLightNearDist_ || z > structuredLightFarDist_) {
-        return false;
-    }
-
-    double fovYRad = vtkMath::RadiansFromDegrees(structuredLightFovY_);
-    double halfHeightAtZ = z * std::tan(fovYRad * 0.5);
-    double halfWidthAtZ = halfHeightAtZ * structuredLightAspectRatio_;
-    double x = v.dot(right);
-    double y = v.dot(up);
-
-    return y >= 0.0 &&
-           y <= halfHeightAtZ &&
-           x >= -halfWidthAtZ &&
-           x <= halfWidthAtZ;
-}
-
-bool OffLineProgrammingSimulationMainWindow::doesTriangleAabbIntersectHalfFrustum(const Vector3d& bboxMin, const Vector3d& bboxMax, const std::array<Vector3d, 5>& frustumPoints) const
-{
-    Vector3d position = frustumPoints[0];
-    Vector3d right = frustumPoints[2] - frustumPoints[1];
-    Vector3d up = frustumPoints[4] - frustumPoints[1];
-    Vector3d farCenter = (frustumPoints[1] + frustumPoints[2] + frustumPoints[3] + frustumPoints[4]) * 0.25;
-    Vector3d forward = farCenter - position;
-    if (right.norm() > 1e-9) {
-        right.normalize();
-    }
-    if (up.norm() > 1e-9) {
-        up.normalize();
-    }
-    if (forward.norm() > 1e-9) {
-        forward.normalize();
-    }
-
-    for (int xi = 0; xi < 2; ++xi) {
-        for (int yi = 0; yi < 2; ++yi) {
-            for (int zi = 0; zi < 2; ++zi) {
-                Vector3d corner(xi == 0 ? bboxMin.x() : bboxMax.x(),
-                                yi == 0 ? bboxMin.y() : bboxMax.y(),
-                                zi == 0 ? bboxMin.z() : bboxMax.z());
-                if (isPointInsideHalfFrustum(corner, position, right, up, forward)) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    for (const auto& point : frustumPoints) {
-        if (point.x() >= bboxMin.x() && point.x() <= bboxMax.x() &&
-            point.y() >= bboxMin.y() && point.y() <= bboxMax.y() &&
-            point.z() >= bboxMin.z() && point.z() <= bboxMax.z()) {
-            return true;
-        }
-    }
-
-    Vector3d frustumMin = frustumPoints[0];
-    Vector3d frustumMax = frustumPoints[0];
-    for (const auto& point : frustumPoints) {
-        frustumMin = frustumMin.cwiseMin(point);
-        frustumMax = frustumMax.cwiseMax(point);
-    }
-
-    return !(bboxMax.x() < frustumMin.x() || bboxMin.x() > frustumMax.x() ||
-             bboxMax.y() < frustumMin.y() || bboxMin.y() > frustumMax.y() ||
-             bboxMax.z() < frustumMin.z() || bboxMin.z() > frustumMax.z());
-}
-
-void OffLineProgrammingSimulationMainWindow::buildStructuredLightCoveredVertices(const Matrix4d& projectorPose,
-                                                                                 const std::array<Vector3d, 5>& frustumPoints,
-                                                                                 std::vector<Vector3d>& coveredVertices) const
-{
-    coveredVertices.clear();
-    if (!workpiecePolyData_) {
-        return;
-    }
-
-    Vector3d position = projectorPose.block<3,1>(0,3);
-    Vector3d right = projectorPose.block<3,1>(0,0).normalized();
-    Vector3d up = projectorPose.block<3,1>(0,1).normalized();
-    Vector3d forward = projectorPose.block<3,1>(0,2).normalized();
-    coveredVertices.reserve(1024);
-    std::vector<std::array<Vector3d, 3>> sampleTriangles;
-    sampleTriangles.reserve(1024);
-    std::vector<Vector3d> sampleNormals;
-    sampleNormals.reserve(1024);
-
-    for (vtkIdType cellId = 0; cellId < workpiecePolyData_->GetNumberOfCells(); ++cellId) {
-        vtkCell* cell = workpiecePolyData_->GetCell(cellId);
-        if (!cell || cell->GetNumberOfPoints() < 3) {
-            continue;
-        }
-
-        double rawP0[3], rawP1[3], rawP2[3];
-        workpiecePolyData_->GetPoint(cell->GetPointId(0), rawP0);
-        workpiecePolyData_->GetPoint(cell->GetPointId(1), rawP1);
-        workpiecePolyData_->GetPoint(cell->GetPointId(2), rawP2);
-
-        Vector3d p0(rawP0[0], rawP0[1], rawP0[2]);
-        Vector3d p1(rawP1[0], rawP1[1], rawP1[2]);
-        Vector3d p2(rawP2[0], rawP2[1], rawP2[2]);
-        Vector3d bboxMin = p0.cwiseMin(p1).cwiseMin(p2);
-        Vector3d bboxMax = p0.cwiseMax(p1).cwiseMax(p2);
-        if (!doesTriangleAabbIntersectHalfFrustum(bboxMin, bboxMax, frustumPoints)) {
-            continue;
-        }
-
-        Vector3d normal = (p1 - p0).cross(p2 - p0);
-        if (normal.norm() < 1e-9) {
-            continue;
-        }
-        normal.normalize();
-
-        double maxEdgeLength = std::max({
-            (p1 - p0).norm(),
-            (p2 - p1).norm(),
-            (p0 - p2).norm()
-        });
-        if (maxEdgeLength <= structuredLightCoverageSampleStep_) {
-            sampleTriangles.push_back({p0, p1, p2});
-            sampleNormals.push_back(normal);
-            continue;
-        }
-
-        int subdivisionCount = std::max(2, static_cast<int>(std::ceil(maxEdgeLength / structuredLightCoverageSampleStep_)));
-        subdivisionCount = std::min(subdivisionCount, 300);
-
-        auto pointOnTriangle = [&](int i, int j) {
-            double u = static_cast<double>(i) / subdivisionCount;
-            double v = static_cast<double>(j) / subdivisionCount;
-            return p0 + (p1 - p0) * u + (p2 - p0) * v;
-        };
-
-        auto appendSampleTriangle = [&](const Vector3d& q0, const Vector3d& q1, const Vector3d& q2) {
-            sampleTriangles.push_back({q0, q1, q2});
-            sampleNormals.push_back(normal);
-        };
-
-        for (int i = 0; i < subdivisionCount; ++i) {
-            for (int j = 0; j < subdivisionCount - i; ++j) {
-                Vector3d q00 = pointOnTriangle(i, j);
-                Vector3d q10 = pointOnTriangle(i + 1, j);
-                Vector3d q01 = pointOnTriangle(i, j + 1);
-                appendSampleTriangle(q00, q10, q01);
-
-                if (i + j < subdivisionCount - 1) {
-                    Vector3d q11 = pointOnTriangle(i + 1, j + 1);
-                    appendSampleTriangle(q10, q11, q01);
-                }
-            }
-        }
-    }
-
-    for (size_t i = 0; i < sampleTriangles.size(); ++i) {
-        const auto& triangle = sampleTriangles[i];
-        const Vector3d& normal = sampleNormals[i];
-        if (!shouldShowCoveredSample(triangle[0], triangle[1], triangle[2], normal, position, right, up, forward)) {
-            continue;
-        }
-
-        coveredVertices.push_back(triangle[0]);
-        coveredVertices.push_back(triangle[1]);
-        coveredVertices.push_back(triangle[2]);
-    }
-}
-
-bool OffLineProgrammingSimulationMainWindow::shouldShowCoveredSample(const Vector3d& p0,
-                                                                     const Vector3d& p1,
-                                                                     const Vector3d& p2,
-                                                                     const Vector3d& normal,
-                                                                     const Vector3d& position,
-                                                                     const Vector3d& right,
-                                                                     const Vector3d& up,
-                                                                     const Vector3d& forward) const
-{
-    Vector3d center = (p0 + p1 + p2) / 3.0;
-
-    bool inside = isPointInsideHalfFrustum(center, position, right, up, forward) ||
-                  isPointInsideHalfFrustum(p0, position, right, up, forward) ||
-                  isPointInsideHalfFrustum(p1, position, right, up, forward) ||
-                  isPointInsideHalfFrustum(p2, position, right, up, forward);
-    if (!inside) {
-        return false;
-    }
-
-    Vector3d viewDir = position - center;
-    if (viewDir.norm() < 1e-9) {
-        return false;
-    }
-    viewDir.normalize();
-
-//    if (normal.dot(viewDir) <= 0.0) {
-//        return false;
-//    }
-
-    return true;
-}
-
-void OffLineProgrammingSimulationMainWindow::updateStructuredLightCoverage(const Matrix4d& projectorPose)
-{
-    if (!workpiecePolyData_ || !structuredLightCoveredActor_) {
-        return;
-    }
-
-    std::array<Vector3d, 5> frustumPoints;
-    buildHalfFrustumPoints(projectorPose, frustumPoints);
-    std::vector<Vector3d> coveredVertices;
-    buildStructuredLightCoveredVertices(projectorPose, frustumPoints, coveredVertices);
-
-    currentFrustumPoints_ = frustumPoints;
-    currentCoveredVertices_ = coveredVertices;
-    currentHasStructuredLightGeometry_ = true;
-    applyStructuredLightCoveredGeometry(coveredVertices);
-}
 
 QString OffLineProgrammingSimulationMainWindow::makePlanningInfo(size_t segmentIndex,
                                                                  MotionTaskType segmentType,
@@ -1843,7 +1915,6 @@ void OffLineProgrammingSimulationMainWindow::recordTrajectorySegment(const std::
                                                                      const std::vector<Vector6d>& motions,
                                                                      const Matrix4d* projectorPose,
                                                                      const std::array<Vector3d, 5>* frustumPoints,
-                                                                     const std::vector<Vector3d>* coveredVertices,
                                                                      const QString& planningInfo)
 {
     recordedTrajectories_.push_back(trajectory);
@@ -1853,14 +1924,12 @@ void OffLineProgrammingSimulationMainWindow::recordTrajectorySegment(const std::
     recordedMotions_.push_back(motions);
     recordedHasProjectorPose_.push_back(projectorPose != nullptr);
     recordedProjectorPoses_.push_back(projectorPose ? *projectorPose : Matrix4d::Identity());
-    recordedHasStructuredLightGeometry_.push_back(frustumPoints != nullptr && coveredVertices != nullptr);
     std::array<Vector3d, 5> storedFrustumPoints;
     storedFrustumPoints.fill(Vector3d::Zero());
     if (frustumPoints) {
         storedFrustumPoints = *frustumPoints;
     }
     recordedFrustumPoints_.push_back(storedFrustumPoints);
-    recordedCoveredVertices_.push_back(coveredVertices ? *coveredVertices : std::vector<Vector3d>{});
     recordedPlanningInfos_.push_back(planningInfo);
 }
 
@@ -1879,8 +1948,6 @@ void OffLineProgrammingSimulationMainWindow::startTrajectoryRecording()
     recordedHasProjectorPose_.clear();
     recordedMotions_.clear();
     recordedFrustumPoints_.clear();
-    recordedCoveredVertices_.clear();
-    recordedHasStructuredLightGeometry_.clear();
     recordedPlanningInfos_.clear();
     isRecordingTrajectory_ = true;
     currentTrajectoryIndex_ = -1;
@@ -1924,7 +1991,8 @@ void OffLineProgrammingSimulationMainWindow::saveTrajectoryToFile(const QString 
     outFile << "- 轨迹段类型: TRANSITION表示过渡，CAMERA_CAPTURE表示拍照，WELDING表示焊接" << std::endl;
     outFile << "- 投影器位姿: 仅拍照段使用，4x4矩阵按行写入16个数" << std::endl;
     outFile << "- 视锥点数量: 缓存的半视锥关键点数量，按P/A/B/C/D顺序保存" << std::endl;
-    outFile << "- 覆盖顶点数量: 缓存的覆盖区域三角网格顶点数量，每3个点组成1个三角形" << std::endl;
+
+
     outFile << "- 轨迹点数量: RRT规划路径点数量" << std::endl;
     outFile << "- 目标点数量: motions路径点数量" << std::endl;
     outFile << std::endl;
@@ -1961,26 +2029,16 @@ void OffLineProgrammingSimulationMainWindow::saveTrajectoryToFile(const QString 
             }
             outFile << std::endl;
         }
-        bool hasStructuredLightGeometry = i < recordedHasStructuredLightGeometry_.size() &&
-                                          recordedHasStructuredLightGeometry_[i] &&
-                                          i < recordedFrustumPoints_.size() &&
-                                          i < recordedCoveredVertices_.size();
-        outFile << "- 结构光几何缓存: " << (hasStructuredLightGeometry ? "是" : "否") << std::endl;
-        if (hasStructuredLightGeometry) {
+        bool hasFrustumData = i < recordedFrustumPoints_.size() &&
+                              i < recordedHasProjectorPose_.size() &&
+                              recordedHasProjectorPose_[i] &&
+                              segmentType == MotionTaskType::CAMERA_CAPTURE;
+        outFile << "- 结构光几何缓存: " << (hasFrustumData ? "是" : "否") << std::endl;
+        if (hasFrustumData) {
             outFile << "- 视锥点数量: " << recordedFrustumPoints_[i].size() << std::endl;
             outFile << "视锥点数据 (P, A, B, C, D):" << std::endl;
             for (size_t j = 0; j < recordedFrustumPoints_[i].size(); ++j) {
                 const Vector3d& point = recordedFrustumPoints_[i][j];
-                outFile << "  点" << j << ": "
-                        << std::fixed << std::setprecision(6)
-                        << point.x() << ", "
-                        << point.y() << ", "
-                        << point.z() << std::endl;
-            }
-            outFile << "- 覆盖顶点数量: " << recordedCoveredVertices_[i].size() << std::endl;
-            outFile << "覆盖顶点数据 (每3个点组成1个三角形):" << std::endl;
-            for (size_t j = 0; j < recordedCoveredVertices_[i].size(); ++j) {
-                const Vector3d& point = recordedCoveredVertices_[i][j];
                 outFile << "  点" << j << ": "
                         << std::fixed << std::setprecision(6)
                         << point.x() << ", "
@@ -2055,8 +2113,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
         recordedProjectorPoses_.clear();
         recordedHasProjectorPose_.clear();
         recordedFrustumPoints_.clear();
-        recordedCoveredVertices_.clear();
-        recordedHasStructuredLightGeometry_.clear();
         recordedPlanningInfos_.clear();
 
         QTextStream in(&file);
@@ -2073,12 +2129,10 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
         bool currentHasProjectorPose = false;
         std::array<Vector3d, 5> currentFrustumPoints;
         currentFrustumPoints.fill(Vector3d::Zero());
-        std::vector<Vector3d> currentCoveredVertices;
-        bool currentHasStructuredLightGeometry = false;
         QString currentPlanningInfo;
 
         // 添加数据读取状态跟踪
-        enum DataType { NONE, RRT_TRAJECTORY, BASE_TRAJECTORY, MOTIONS_TRAJECTORY, FRUSTUM_POINTS, COVERED_VERTICES, PLANNING_INFO };
+        enum DataType { NONE, RRT_TRAJECTORY, BASE_TRAJECTORY, MOTIONS_TRAJECTORY, FRUSTUM_POINTS, PLANNING_INFO };
         DataType currentDataType = NONE;
 
         while (!in.atEnd()) {
@@ -2102,8 +2156,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
                     recordedProjectorPoses_.push_back(currentProjectorPose);
                     recordedHasProjectorPose_.push_back(currentHasProjectorPose);
                     recordedFrustumPoints_.push_back(currentFrustumPoints);
-                    recordedCoveredVertices_.push_back(currentCoveredVertices);
-                    recordedHasStructuredLightGeometry_.push_back(currentHasStructuredLightGeometry);
                     recordedPlanningInfos_.push_back(currentPlanningInfo.trimmed());
                 }
 
@@ -2117,8 +2169,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
                 currentProjectorPose = Matrix4d::Identity();
                 currentHasProjectorPose = false;
                 currentFrustumPoints.fill(Vector3d::Zero());
-                currentCoveredVertices.clear();
-                currentHasStructuredLightGeometry = false;
                 currentPlanningInfo.clear();
                 currentDataType = NONE;
 
@@ -2157,14 +2207,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
                     currentHasProjectorPose = true;
                     qDebug() << u8"检测到投影器位姿";
                 }
-            }
-
-            if (line.find("- 结构光几何缓存: 是") != std::string::npos) {
-                currentHasStructuredLightGeometry = true;
-                continue;
-            } else if (line.find("- 结构光几何缓存: 否") != std::string::npos) {
-                currentHasStructuredLightGeometry = false;
-                continue;
             }
 
             if (line.find("规划输出信息:") != std::string::npos) {
@@ -2208,11 +2250,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
 
             if (line.find("视锥点数据") != std::string::npos) {
                 currentDataType = FRUSTUM_POINTS;
-                continue;
-            }
-
-            if (line.find("覆盖顶点数据") != std::string::npos) {
-                currentDataType = COVERED_VERTICES;
                 continue;
             }
 
@@ -2279,11 +2316,7 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
                     } else if (currentDataType == FRUSTUM_POINTS) {
                         if (pointIndex >= 0 && static_cast<size_t>(pointIndex) < currentFrustumPoints.size()) {
                             currentFrustumPoints[pointIndex] = basePos;
-                            currentHasStructuredLightGeometry = true;
                         }
-                    } else if (currentDataType == COVERED_VERTICES) {
-                        currentCoveredVertices.push_back(basePos);
-                        currentHasStructuredLightGeometry = true;
                     }
                 }
             }
@@ -2299,8 +2332,6 @@ void OffLineProgrammingSimulationMainWindow::loadTrajectoryFromFile(const QStrin
             recordedProjectorPoses_.push_back(currentProjectorPose);
             recordedHasProjectorPose_.push_back(currentHasProjectorPose);
             recordedFrustumPoints_.push_back(currentFrustumPoints);
-            recordedCoveredVertices_.push_back(currentCoveredVertices);
-            recordedHasStructuredLightGeometry_.push_back(currentHasStructuredLightGeometry);
             recordedPlanningInfos_.push_back(currentPlanningInfo.trimmed());
         }
 
@@ -2344,15 +2375,9 @@ void OffLineProgrammingSimulationMainWindow::replayTrajectory(int trajectoryInde
                                                  i < recordedProjectorPoses_.size())
                     ? &recordedProjectorPoses_[i]
                     : nullptr;
-                const std::array<Vector3d, 5>* frustumPoints = (i < recordedHasStructuredLightGeometry_.size() &&
-                                                                recordedHasStructuredLightGeometry_[i] &&
+                const std::array<Vector3d, 5>* frustumPoints = (segmentType == MotionTaskType::CAMERA_CAPTURE &&
                                                                 i < recordedFrustumPoints_.size())
                     ? &recordedFrustumPoints_[i]
-                    : nullptr;
-                const std::vector<Vector3d>* coveredVertices = (i < recordedHasStructuredLightGeometry_.size() &&
-                                                                recordedHasStructuredLightGeometry_[i] &&
-                                                                i < recordedCoveredVertices_.size())
-                    ? &recordedCoveredVertices_[i]
                     : nullptr;
                 QString planningInfo = i < recordedPlanningInfos_.size()
                     ? recordedPlanningInfos_[i]
@@ -2374,7 +2399,6 @@ void OffLineProgrammingSimulationMainWindow::replayTrajectory(int trajectoryInde
                                       segmentType,
                                       projectorPose,
                                       frustumPoints,
-                                      coveredVertices,
                                       j == 0 ? planningInfo : QString());
 
                 }
@@ -2402,15 +2426,9 @@ void OffLineProgrammingSimulationMainWindow::replayTrajectory(int trajectoryInde
                                              static_cast<size_t>(trajectoryIndex) < recordedProjectorPoses_.size())
                 ? &recordedProjectorPoses_[trajectoryIndex]
                 : nullptr;
-            const std::array<Vector3d, 5>* frustumPoints = (static_cast<size_t>(trajectoryIndex) < recordedHasStructuredLightGeometry_.size() &&
-                                                            recordedHasStructuredLightGeometry_[trajectoryIndex] &&
+            const std::array<Vector3d, 5>* frustumPoints = (segmentType == MotionTaskType::CAMERA_CAPTURE &&
                                                             static_cast<size_t>(trajectoryIndex) < recordedFrustumPoints_.size())
                 ? &recordedFrustumPoints_[trajectoryIndex]
-                : nullptr;
-            const std::vector<Vector3d>* coveredVertices = (static_cast<size_t>(trajectoryIndex) < recordedHasStructuredLightGeometry_.size() &&
-                                                            recordedHasStructuredLightGeometry_[trajectoryIndex] &&
-                                                            static_cast<size_t>(trajectoryIndex) < recordedCoveredVertices_.size())
-                ? &recordedCoveredVertices_[trajectoryIndex]
                 : nullptr;
             QString planningInfo = static_cast<size_t>(trajectoryIndex) < recordedPlanningInfos_.size()
                 ? recordedPlanningInfos_[trajectoryIndex]
@@ -2432,7 +2450,6 @@ void OffLineProgrammingSimulationMainWindow::replayTrajectory(int trajectoryInde
                                   segmentType,
                                   projectorPose,
                                   frustumPoints,
-                                  coveredVertices,
                                   j == 0 ? planningInfo : QString());
 
 
@@ -2528,8 +2545,6 @@ void OffLineProgrammingSimulationMainWindow::clearRecordedTrajectories()
     recordedProjectorPoses_.clear();
     recordedHasProjectorPose_.clear();
     recordedFrustumPoints_.clear();
-    recordedCoveredVertices_.clear();
-    recordedHasStructuredLightGeometry_.clear();
     recordedPlanningInfos_.clear();
     currentTrajectoryIndex_ = -1;
     qDebug() << u8"已清除所有记录的轨迹";
@@ -2777,16 +2792,7 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_2_clicked()
             continue;
         }
 
-        EdgeInfo edge_info1;
-
-        EdgeInfo original_edge = edgeInfo[edge_idx];
-        edge_info1.edge = original_edge.edge;
-        edge_info1.ends = original_edge.ends;
-        edge_info1.is_arc_or_spline = original_edge.is_arc_or_spline;
-        edge_info1.faces_info = original_edge.faces_info;
-        edge_info1.normals = original_edge.normals;
-        edge_info1.sample_points = original_edge.sample_points;
-        selected_edgeInfo.push_back(edge_info1);
+        selected_edgeInfo.push_back(edgeInfo[edge_idx]);
     }
 
     VisualizeSelectedEdgePointsAndNormals();
@@ -2962,6 +2968,24 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
 
     switch (currentWeldingType_) {
     case WeldingType::PIPE_TO_PIPE:
+        if (all_coordinate_systems_B_.size() >= 2) {
+            for (size_t groupIndex = 0; groupIndex < 2; ++groupIndex) {
+                const auto& coordinateSystemGroup = all_coordinate_systems_B_[groupIndex];
+                if (coordinateSystemGroup.empty()) {
+                    continue;
+                }
+
+                const size_t viewpointIndex = coordinateSystemGroup.size() >= 5
+                    ? coordinateSystemGroup.size() - 5
+                    : 0;
+                viewpoint.push_back(makeOffsetViewpoint(coordinateSystemGroup[viewpointIndex], 500.0, false));
+            }
+        }
+
+        if (viewpoint.size() >= 2) {
+            break;
+        }
+
         if (!selected_edgeInfo.empty()) {
             const auto& edge = selected_edgeInfo.front();
             if (!edge.sample_points.empty() && !edge.normals.empty()) {
@@ -2974,8 +2998,8 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                     }
                 }
 
-                if (max_z_idx >= (5 - 1)) {
-                    const size_t idx_to_start = max_z_idx - (5 - 1);
+                {
+                    const size_t idx_to_start = max_z_idx >= (5 - 1) ? max_z_idx - (5 - 1) : 0;
                     const Point3D& point = edge.sample_points[idx_to_start];
                     const auto& normal_tuple = edge.normals[idx_to_start];
                     const Normal3D tangent = -1.0 * std::get<0>(normal_tuple);
@@ -2991,21 +3015,24 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                     viewpoint.push_back(vp);
                 }
 
-                if (max_z_idx + (5 - 1) < edge.sample_points.size()) {
-                    const size_t idx_to_end = max_z_idx + (5 - 1);
-                    const Point3D& point = edge.sample_points[idx_to_end];
-                    const auto& normal_tuple = edge.normals[idx_to_end];
-                    const Normal3D tangent = std::get<0>(normal_tuple);
-                    const Normal3D binormal = std::get<1>(normal_tuple);
-                    const Normal3D normal = std::get<2>(normal_tuple);
-                    CoordinateSystem csB_view = createCoordinate(point, tangent, binormal, normal, 135.0, 0.0);
-                    Matrix4d vp = csB_view.transform_matrix;
-                    constexpr double PIPE_VIEW_OFFSET_Z = 500.0;
-                    constexpr double PIPE_VIEW_OFFSET_Y = 100.0;
-                    vp(0,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.x) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.x);
-                    vp(1,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.y) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.y);
-                    vp(2,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.z) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.z);
-                    viewpoint.push_back(vp);
+                {
+                    const size_t idx_to_end = std::min(max_z_idx + (5 - 1), edge.sample_points.size() - 1);
+                    const size_t idx_to_start = max_z_idx >= (5 - 1) ? max_z_idx - (5 - 1) : 0;
+                    if (idx_to_end != idx_to_start) {
+                        const Point3D& point = edge.sample_points[idx_to_end];
+                        const auto& normal_tuple = edge.normals[idx_to_end];
+                        const Normal3D tangent = std::get<0>(normal_tuple);
+                        const Normal3D binormal = std::get<1>(normal_tuple);
+                        const Normal3D normal = std::get<2>(normal_tuple);
+                        CoordinateSystem csB_view = createCoordinate(point, tangent, binormal, normal, 135.0, 0.0);
+                        Matrix4d vp = csB_view.transform_matrix;
+                        constexpr double PIPE_VIEW_OFFSET_Z = 500.0;
+                        constexpr double PIPE_VIEW_OFFSET_Y = 100.0;
+                        vp(0,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.x) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.x);
+                        vp(1,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.y) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.y);
+                        vp(2,3) += PIPE_VIEW_OFFSET_Z * (-csB_view.z_axis.z) + PIPE_VIEW_OFFSET_Y * (-csB_view.y_axis.z);
+                        viewpoint.push_back(vp);
+                    }
                 }
             }
         }
@@ -3115,11 +3142,17 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
 
     std::vector<Vector6d> view;
     std::vector<Matrix4d> projectorPoses;
-    for (const auto& p : viewpoint) {
+    std::vector<bool> viewpointIkReachable(viewpoint.size(), false);
+    std::vector<QString> viewpointIkMessages(viewpoint.size());
+    std::vector<int> viewpointReachableOrder(viewpoint.size(), -1);
+    const Vector6d referenceJointAngles = (!motions.empty() && !motions[0].empty())
+        ? motions[0][0]
+        : startAnglesDeg_;
+    for (size_t viewIndex = 0; viewIndex < viewpoint.size(); ++viewIndex) {
+        const auto& p = viewpoint[viewIndex];
         Matrix4d projectorPose = p;
         Matrix4d q = (baseMatrix * p) * end2camMatrix;
         std::vector<Vector6d> solutions = solver.inverseKinematics(q);
-
 
         bool found_valid_solution = false;
         double min_distance = std::numeric_limits<double>::max();
@@ -3143,7 +3176,7 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
 
             if (!solver.isStateInCollision2(q_vec)) {
                 // 计算与motions[0][0]的距离
-                double distance = solver.angleDistance(sol, motions[0][0]);
+                double distance = solver.angleDistance(sol, referenceJointAngles);
 
                 // 选择距离最小的解
                 if (distance < min_distance) {
@@ -3154,13 +3187,47 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
             }
         }
 
-        if (!found_valid_solution && !solutions.empty()) {
-            selected_solution = solutions[0];
-            qDebug()<<"no";
+        if (!found_valid_solution) {
+            viewpointIkMessages[viewIndex] =
+                QString(u8"视点 %1 不可达：IK原始解 %2 个，但无满足关节限位且不碰撞的解")
+                    .arg(viewIndex + 1)
+                    .arg(solutions.size());
+            continue;
         }
 
+        viewpointIkReachable[viewIndex] = true;
+        viewpointReachableOrder[viewIndex] = static_cast<int>(view.size());
+        viewpointIkMessages[viewIndex] =
+            QString(u8"视点 %1 可达：IK原始解 %2 个，已选有效解")
+                .arg(viewIndex + 1)
+                .arg(solutions.size());
         view.push_back(selected_solution);
         projectorPoses.push_back(projectorPose);
+    }
+
+    if (view.empty()) {
+        QString allViewpointPlanningInfo;
+        allViewpointPlanningInfo += QString(u8"PIPE_TO_PIPE viewpoint information\n");
+        allViewpointPlanningInfo += QString(u8"Generated viewpoint count: %1\n").arg(viewpoint.size());
+        allViewpointPlanningInfo += QString(u8"Reachable viewpoint count: 0");
+        for (size_t viewIndex = 0; viewIndex < viewpoint.size(); ++viewIndex) {
+            const Matrix4d& viewpointPose = viewpoint[viewIndex];
+            allViewpointPlanningInfo += QString(u8"\n\nViewpoint %1\n").arg(viewIndex + 1);
+            allViewpointPlanningInfo += QString(u8"IK status: %1\n").arg(viewpointIkMessages[viewIndex]);
+            allViewpointPlanningInfo += QString(u8"Planning segment: N/A\n");
+            allViewpointPlanningInfo += QString(u8"Viewpoint position (mm): %1\n")
+                .arg(formatVector3dForInfo(viewpointPose.block<3,1>(0,3)));
+            allViewpointPlanningInfo += QString(u8"Viewpoint orientation Right: %1\n")
+                .arg(formatVector3dForInfo(viewpointPose.block<3,1>(0,0)));
+            allViewpointPlanningInfo += QString(u8"Viewpoint orientation Up: %1\n")
+                .arg(formatVector3dForInfo(viewpointPose.block<3,1>(0,1)));
+            allViewpointPlanningInfo += QString(u8"Viewpoint orientation Forward: %1\n")
+                .arg(formatVector3dForInfo(viewpointPose.block<3,1>(0,2)));
+            allViewpointPlanningInfo += QString(u8"Camera capture RRT status: not planned");
+        }
+        appendPlanningInfo(allViewpointPlanningInfo);
+        QMessageBox::warning(this, u8"规划失败", u8"所有视点都没有满足关节限位且不碰撞的IK解");
+        return;
     }
 
     /******************** 8. RRT 规划 ********************/
@@ -3240,7 +3307,10 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
     std::vector<Vector3d> base_move_base_motion;
 
     // 起始状态：RRT规划后的关节角度和基座位置
-    const Vector6d& rrt_joints = traj.back().back();
+    Vector6d rrt_joints = lifting_joints;
+    if (!traj.empty() && !traj.back().empty()) {
+        rrt_joints = traj.back().back();
+    }
 
     // 目标状态：保持关节角度不变，基座移动到目标位置
     Vector3d target_base(result.placement.x, result.placement.y, result.placement.z);
@@ -3260,6 +3330,11 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
         {
             const auto& last_traj = traj.back();
             const auto& last_base = base_traj.back();
+            if (last_traj.empty() || last_base.empty()) {
+                traj.emplace_back();
+                base_traj.emplace_back();
+                continue;
+            }
 
             const Vector6d& j = last_traj.back();
             const Vector3d& b = last_base.back();
@@ -3322,29 +3397,48 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
         weldingManipulability = 0.0;
     }
 
-    std::vector<QString> trajectoryPlanningInfos(traj.size());
-    for (size_t i = 0; i < traj.size(); ++i) {
-        if (i >= planning_success.size() || !planning_success[i] || traj[i].empty()) {
-            continue;
-        }
+    QString allViewpointPlanningInfo;
+    allViewpointPlanningInfo += QString(u8"PIPE_TO_PIPE viewpoint information\n");
+    allViewpointPlanningInfo += QString(u8"Generated viewpoint count: %1\n").arg(viewpoint.size());
+    allViewpointPlanningInfo += QString(u8"Reachable viewpoint count: %1\n").arg(projectorPoses.size());
+    allViewpointPlanningInfo += QString(u8"Shared base position (mm): %1\n")
+        .arg(formatVector3dForInfo(Vector3d(result.placement.x, result.placement.y, result.placement.z)));
+    allViewpointPlanningInfo += QString(u8"Minimum welding manipulability: %1")
+        .arg(weldingManipulability, 0, 'g', 12);
 
-        bool is_view_segment = i >= 3 && (i - 3) < view.size();
-        if (!is_view_segment) {
-            continue;
-        }
-
-        size_t viewIndex = i - 3;
-        const Matrix4d* viewpointPose = viewIndex < projectorPoses.size() ? &projectorPoses[viewIndex] : nullptr;
-        if (!viewpointPose) {
-            continue;
-        }
-
-        Vector3d basePosition = i < base_traj.size() && !base_traj[i].empty()
-            ? base_traj[i].back()
+    // 为所有原始生成视点一次性输出规划信息，包含不可达/未规划的视点
+    for (size_t viewIndex = 0; viewIndex < viewpoint.size(); ++viewIndex) {
+        const Matrix4d& viewpointPose = viewpoint[viewIndex];
+        const int reachableOrder = viewpointReachableOrder[viewIndex];
+        const bool reachable = reachableOrder >= 0;
+        const size_t trajIndex = reachable ? static_cast<size_t>(3 + reachableOrder) : std::numeric_limits<size_t>::max();
+        Vector3d basePosition = (reachable && trajIndex < base_traj.size() && !base_traj[trajIndex].empty())
+            ? base_traj[trajIndex].back()
             : Vector3d(result.placement.x, result.placement.y, result.placement.z);
-        trajectoryPlanningInfos[i] = makePlanningInfo(i, MotionTaskType::CAMERA_CAPTURE, basePosition, weldingManipulability, viewpointPose);
-        appendPlanningInfo(trajectoryPlanningInfos[i]);
+        Vector3d viewpointPosition = viewpointPose.block<3,1>(0,3);
+        Vector3d right = viewpointPose.block<3,1>(0,0);
+        Vector3d up = viewpointPose.block<3,1>(0,1);
+        Vector3d forward = viewpointPose.block<3,1>(0,2);
+
+        allViewpointPlanningInfo += QString(u8"\n\nViewpoint %1\n").arg(viewIndex + 1);
+        allViewpointPlanningInfo += QString(u8"IK status: %1\n").arg(viewpointIkMessages[viewIndex]);
+        allViewpointPlanningInfo += reachable
+            ? QString(u8"Planning segment: %1\n").arg(trajIndex)
+            : QString(u8"Planning segment: N/A\n");
+        allViewpointPlanningInfo += QString(u8"Base position (mm): %1\n").arg(formatVector3dForInfo(basePosition));
+        allViewpointPlanningInfo += QString(u8"Viewpoint position (mm): %1\n").arg(formatVector3dForInfo(viewpointPosition));
+        allViewpointPlanningInfo += QString(u8"Viewpoint orientation Right: %1\n").arg(formatVector3dForInfo(right));
+        allViewpointPlanningInfo += QString(u8"Viewpoint orientation Up: %1\n").arg(formatVector3dForInfo(up));
+        allViewpointPlanningInfo += QString(u8"Viewpoint orientation Forward: %1\n").arg(formatVector3dForInfo(forward));
+        QString rrtStatus = u8"not planned";
+        if (reachable) {
+            rrtStatus = (trajIndex < planning_success.size() && planning_success[trajIndex])
+                ? "success"
+                : "failed";
+        }
+        allViewpointPlanningInfo += QString(u8"Camera capture RRT status: %1").arg(rrtStatus);
     }
+    appendPlanningInfo(allViewpointPlanningInfo);
 
     /******************** 9. 执行 + 正确记录 ********************/
     bool has_successful_plan = false;
@@ -3366,22 +3460,13 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
         const Matrix4d* captureProjectorPose = nullptr;
         std::array<Vector3d, 5> captureFrustumPoints;
         captureFrustumPoints.fill(Vector3d::Zero());
-        std::vector<Vector3d> captureCoveredVertices;
         const std::array<Vector3d, 5>* captureFrustumPointsPtr = nullptr;
-        const std::vector<Vector3d>* captureCoveredVerticesPtr = nullptr;
-        QString capturePlanningInfo;
         if (is_view_segment) {
             size_t viewIndex = i - 3;
             captureProjectorPose = viewIndex < projectorPoses.size() ? &projectorPoses[viewIndex] : nullptr;
             if (captureProjectorPose) {
                 buildHalfFrustumPoints(*captureProjectorPose, captureFrustumPoints);
-                buildStructuredLightCoveredVertices(*captureProjectorPose, captureFrustumPoints, captureCoveredVertices);
                 captureFrustumPointsPtr = &captureFrustumPoints;
-                captureCoveredVerticesPtr = &captureCoveredVertices;
-                Vector3d captureBase = i < base_traj.size() && !base_traj[i].empty()
-                    ? base_traj[i].back()
-                    : Vector3d(result.placement.x, result.placement.y, result.placement.z);
-                capturePlanningInfo = makePlanningInfo(i, MotionTaskType::CAMERA_CAPTURE, captureBase, weldingManipulability, captureProjectorPose);
             }
         }
 
@@ -3392,7 +3477,6 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                               base_traj[i][z][2],
                               MotionMode::JOINT_AND_BASE,
                               i < trajectory_types.size() ? trajectory_types[i] : MotionTaskType::TRANSITION,
-                              nullptr,
                               nullptr,
                               nullptr,
                               QString());
@@ -3409,8 +3493,7 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                               MotionTaskType::CAMERA_CAPTURE,
                               captureProjectorPose,
                               captureFrustumPointsPtr,
-                              captureCoveredVerticesPtr,
-                              capturePlanningInfo);
+                              QString());
         }
 
         // 执行目标路径（如果存在）
@@ -3445,7 +3528,6 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                                     recordedSegmentMotions,
                                     nullptr,
                                     nullptr,
-                                    nullptr,
                                     QString());
 
             if (is_view_segment) {
@@ -3456,8 +3538,7 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                                         {},
                                         captureProjectorPose,
                                         captureFrustumPointsPtr,
-                                        captureCoveredVerticesPtr,
-                                        capturePlanningInfo);
+                                        QString());
             }
         }
     }
