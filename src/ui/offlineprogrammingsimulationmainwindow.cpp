@@ -113,6 +113,21 @@ OffLineProgrammingSimulationMainWindow::OffLineProgrammingSimulationMainWindow(Q
     for (auto& spinBox : manualViewAxisSpinBoxes_) {
         spinBox = nullptr;
     }
+    for (auto& spinBox : manualView2PositionSpinBoxes_) {
+        spinBox = nullptr;
+    }
+    for (auto& spinBox : manualView2AxisSpinBoxes_) {
+        spinBox = nullptr;
+    }
+    for (auto& row : manualViewEulerSpinBoxes_) {
+        for (auto& spinBox : row) {
+            spinBox = nullptr;
+        }
+    }
+    for (auto& button : manualViewEulerButtons_) {
+        button = nullptr;
+    }
+    manualWeldingPlanCheckBox_ = nullptr;
     manualSolveIkButton_ = nullptr;
     manualNextIkSolutionButton_ = nullptr;
     manualIkStatusLabel_ = nullptr;
@@ -1029,7 +1044,7 @@ void OffLineProgrammingSimulationMainWindow::initQSliders()
 
 void OffLineProgrammingSimulationMainWindow::initManualViewpointIkPanel()
 {
-    auto panel = new QGroupBox(u8"手动视点IK", this);
+    auto panel = new QGroupBox(u8"手动基座/视点", this);
     auto grid = new QGridLayout(panel);
     grid->setContentsMargins(8, 8, 8, 8);
     grid->setHorizontalSpacing(6);
@@ -1054,10 +1069,13 @@ void OffLineProgrammingSimulationMainWindow::initManualViewpointIkPanel()
         grid->addWidget(manualBaseSpinBoxes_[i], 1, i + 1);
     }
 
-    grid->addWidget(new QLabel(u8"视点(mm)", panel), 2, 0);
+    manualWeldingPlanCheckBox_ = new QCheckBox(u8"焊接规划使用输入基座/视点", panel);
+    grid->addWidget(manualWeldingPlanCheckBox_, 2, 0, 1, 4);
+
+    grid->addWidget(new QLabel(u8"视点1(mm)", panel), 3, 0);
     for (int i = 0; i < 3; ++i) {
         manualViewPositionSpinBoxes_[i] = makeSpinBox(0.0);
-        grid->addWidget(manualViewPositionSpinBoxes_[i], 2, i + 1);
+        grid->addWidget(manualViewPositionSpinBoxes_[i], 3, i + 1);
     }
 
     const char* axisNames[3] = {u8"右", u8"上", u8"前"};
@@ -1067,14 +1085,53 @@ void OffLineProgrammingSimulationMainWindow::initManualViewpointIkPanel()
         0.0, 0.0, 1.0
     };
     for (int axis = 0; axis < 3; ++axis) {
-        grid->addWidget(new QLabel(axisNames[axis], panel), 3 + axis, 0);
+        grid->addWidget(new QLabel(axisNames[axis], panel), 4 + axis, 0);
         for (int coord = 0; coord < 3; ++coord) {
             const int index = axis * 3 + coord;
             manualViewAxisSpinBoxes_[index] = makeSpinBox(axisDefaults[index]);
             manualViewAxisSpinBoxes_[index]->setSingleStep(0.1);
-            grid->addWidget(manualViewAxisSpinBoxes_[index], 3 + axis, coord + 1);
+            grid->addWidget(manualViewAxisSpinBoxes_[index], 4 + axis, coord + 1);
         }
     }
+
+    grid->addWidget(new QLabel(u8"视点1姿态角", panel), 7, 0);
+    const char* eulerLabels[3] = {"RX", "RY", "RZ"};
+    for (int i = 0; i < 3; ++i) {
+        manualViewEulerSpinBoxes_[0][i] = makeSpinBox(0.0);
+        manualViewEulerSpinBoxes_[0][i]->setRange(-360.0, 360.0);
+        manualViewEulerSpinBoxes_[0][i]->setSingleStep(5.0);
+        grid->addWidget(manualViewEulerSpinBoxes_[0][i], 7, i + 1);
+        manualViewEulerSpinBoxes_[0][i]->setPrefix(QString("%1 ").arg(eulerLabels[i]));
+    }
+    manualViewEulerButtons_[0] = new QPushButton(u8"欧拉角更新视点1", panel);
+    grid->addWidget(manualViewEulerButtons_[0], 8, 0, 1, 4);
+
+    grid->addWidget(new QLabel(u8"视点2(mm)", panel), 9, 0);
+    for (int i = 0; i < 3; ++i) {
+        manualView2PositionSpinBoxes_[i] = makeSpinBox(0.0);
+        grid->addWidget(manualView2PositionSpinBoxes_[i], 9, i + 1);
+    }
+
+    for (int axis = 0; axis < 3; ++axis) {
+        grid->addWidget(new QLabel(axisNames[axis], panel), 10 + axis, 0);
+        for (int coord = 0; coord < 3; ++coord) {
+            const int index = axis * 3 + coord;
+            manualView2AxisSpinBoxes_[index] = makeSpinBox(axisDefaults[index]);
+            manualView2AxisSpinBoxes_[index]->setSingleStep(0.1);
+            grid->addWidget(manualView2AxisSpinBoxes_[index], 10 + axis, coord + 1);
+        }
+    }
+
+    grid->addWidget(new QLabel(u8"视点2姿态角", panel), 13, 0);
+    for (int i = 0; i < 3; ++i) {
+        manualViewEulerSpinBoxes_[1][i] = makeSpinBox(0.0);
+        manualViewEulerSpinBoxes_[1][i]->setRange(-360.0, 360.0);
+        manualViewEulerSpinBoxes_[1][i]->setSingleStep(5.0);
+        grid->addWidget(manualViewEulerSpinBoxes_[1][i], 13, i + 1);
+        manualViewEulerSpinBoxes_[1][i]->setPrefix(QString("%1 ").arg(eulerLabels[i]));
+    }
+    manualViewEulerButtons_[1] = new QPushButton(u8"欧拉角更新视点2", panel);
+    grid->addWidget(manualViewEulerButtons_[1], 14, 0, 1, 4);
 
     manualSolveIkButton_ = new QPushButton(u8"求IK并移动", panel);
     manualNextIkSolutionButton_ = new QPushButton(u8"下一个解", panel);
@@ -1082,38 +1139,54 @@ void OffLineProgrammingSimulationMainWindow::initManualViewpointIkPanel()
     manualIkStatusLabel_ = new QLabel(u8"未求解", panel);
     manualIkStatusLabel_->setWordWrap(true);
 
-    grid->addWidget(manualSolveIkButton_, 6, 0, 1, 2);
-    grid->addWidget(manualNextIkSolutionButton_, 6, 2, 1, 2);
-    grid->addWidget(manualIkStatusLabel_, 7, 0, 1, 4);
+    grid->addWidget(manualSolveIkButton_, 15, 0, 1, 2);
+    grid->addWidget(manualNextIkSolutionButton_, 15, 2, 1, 2);
+    grid->addWidget(manualIkStatusLabel_, 16, 0, 1, 4);
 
     connect(manualSolveIkButton_, &QPushButton::clicked,
             this, &OffLineProgrammingSimulationMainWindow::onManualViewpointIkSolveClicked);
     connect(manualNextIkSolutionButton_, &QPushButton::clicked,
             this, &OffLineProgrammingSimulationMainWindow::onManualViewpointIkNextClicked);
+    connect(manualViewEulerButtons_[0], &QPushButton::clicked,
+            this, &OffLineProgrammingSimulationMainWindow::onManualViewpoint1EulerClicked);
+    connect(manualViewEulerButtons_[1], &QPushButton::clicked,
+            this, &OffLineProgrammingSimulationMainWindow::onManualViewpoint2EulerClicked);
 
     ui->verticalLayout_9->addWidget(panel);
 }
 
 bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& projectorPose) const
 {
-    Vector3d position(manualViewPositionSpinBoxes_[0]->value(),
-                      manualViewPositionSpinBoxes_[1]->value(),
-                      manualViewPositionSpinBoxes_[2]->value());
-    Vector3d right(manualViewAxisSpinBoxes_[0]->value(),
-                   manualViewAxisSpinBoxes_[1]->value(),
-                   manualViewAxisSpinBoxes_[2]->value());
-    Vector3d up(manualViewAxisSpinBoxes_[3]->value(),
-                manualViewAxisSpinBoxes_[4]->value(),
-                manualViewAxisSpinBoxes_[5]->value());
-    const Vector3d inputForward(manualViewAxisSpinBoxes_[6]->value(),
-                                manualViewAxisSpinBoxes_[7]->value(),
-                                manualViewAxisSpinBoxes_[8]->value());
+    return readManualProjectorPose(0, projectorPose);
+}
+
+bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(int viewIndex, Matrix4d& projectorPose) const
+{
+    QDoubleSpinBox* const* positionSpinBoxes = viewIndex == 0
+        ? manualViewPositionSpinBoxes_
+        : manualView2PositionSpinBoxes_;
+    QDoubleSpinBox* const* axisSpinBoxes = viewIndex == 0
+        ? manualViewAxisSpinBoxes_
+        : manualView2AxisSpinBoxes_;
+
+    Vector3d position(positionSpinBoxes[0]->value(),
+                      positionSpinBoxes[1]->value(),
+                      positionSpinBoxes[2]->value());
+    Vector3d right(axisSpinBoxes[0]->value(),
+                   axisSpinBoxes[1]->value(),
+                   axisSpinBoxes[2]->value());
+    Vector3d up(axisSpinBoxes[3]->value(),
+                axisSpinBoxes[4]->value(),
+                axisSpinBoxes[5]->value());
+    const Vector3d inputForward(axisSpinBoxes[6]->value(),
+                                axisSpinBoxes[7]->value(),
+                                axisSpinBoxes[8]->value());
     Vector3d forward = inputForward;
 
     constexpr double axisEps = 1e-8;
     if (right.norm() <= axisEps || up.norm() <= axisEps || forward.norm() <= axisEps) {
         QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
-                             u8"输入错误", u8"右/上/前三个方向轴都必须是非零向量。");
+                             u8"输入错误", QString(u8"视点%1右/上/前三个方向轴都必须是非零向量。").arg(viewIndex + 1));
         return false;
     }
 
@@ -1123,7 +1196,7 @@ bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& p
     up = up - right.dot(up) * right;
     if (up.norm() <= axisEps) {
         QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
-                             u8"输入错误", u8"投影仪“上”方向不能与“右”方向平行。");
+                             u8"输入错误", QString(u8"视点%1“上”方向不能与“右”方向平行。").arg(viewIndex + 1));
         return false;
     }
     up.normalize();
@@ -1131,7 +1204,7 @@ bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& p
     Vector3d orthogonalForward = right.cross(up);
     if (orthogonalForward.norm() <= axisEps) {
         QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
-                             u8"输入错误", u8"投影仪右/上方向无法构成有效坐标系。");
+                             u8"输入错误", QString(u8"视点%1右/上方向无法构成有效坐标系。").arg(viewIndex + 1));
         return false;
     }
     orthogonalForward.normalize();
@@ -1140,7 +1213,7 @@ bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& p
     const double forwardAlignment = orthogonalForward.dot(forward);
     if (std::abs(forwardAlignment) < minForwardAlignment) {
         QMessageBox::warning(const_cast<OffLineProgrammingSimulationMainWindow*>(this),
-                             u8"输入错误", u8"投影仪“前”方向与“右×上”方向偏差过大，请检查坐标轴输入。");
+                             u8"输入错误", QString(u8"视点%1“前”方向与“右×上”方向偏差过大，请检查坐标轴输入。").arg(viewIndex + 1));
         return false;
     }
     if (forwardAlignment < 0.0) {
@@ -1154,6 +1227,63 @@ bool OffLineProgrammingSimulationMainWindow::readManualProjectorPose(Matrix4d& p
     projectorPose.block<3,1>(0,2) = orthogonalForward;
     projectorPose.block<3,1>(0,3) = position;
     return true;
+}
+
+void OffLineProgrammingSimulationMainWindow::applyManualEulerToViewpoint(int viewIndex)
+{
+    if (viewIndex < 0 || viewIndex > 1) {
+        return;
+    }
+
+    const double rx = manualViewEulerSpinBoxes_[viewIndex][0]->value() * M_PI / 180.0;
+    const double ry = manualViewEulerSpinBoxes_[viewIndex][1]->value() * M_PI / 180.0;
+    const double rz = manualViewEulerSpinBoxes_[viewIndex][2]->value() * M_PI / 180.0;
+
+    Eigen::Matrix3d rotation =
+        (Eigen::AngleAxisd(rz, Eigen::Vector3d::UnitZ()) *
+         Eigen::AngleAxisd(ry, Eigen::Vector3d::UnitY()) *
+         Eigen::AngleAxisd(rx, Eigen::Vector3d::UnitX())).toRotationMatrix();
+
+    QDoubleSpinBox** axisSpinBoxes = viewIndex == 0
+        ? manualViewAxisSpinBoxes_
+        : manualView2AxisSpinBoxes_;
+
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int coord = 0; coord < 3; ++coord) {
+            QSignalBlocker blocker(axisSpinBoxes[axis * 3 + coord]);
+            axisSpinBoxes[axis * 3 + coord]->setValue(rotation(coord, axis));
+        }
+    }
+}
+
+void OffLineProgrammingSimulationMainWindow::onManualViewpoint1EulerClicked()
+{
+    applyManualEulerToViewpoint(0);
+}
+
+void OffLineProgrammingSimulationMainWindow::onManualViewpoint2EulerClicked()
+{
+    applyManualEulerToViewpoint(1);
+}
+
+std::vector<Matrix4d> OffLineProgrammingSimulationMainWindow::readManualWeldingViewpoints(size_t requiredViewpointCount) const
+{
+    std::vector<Matrix4d> manualViewpoints;
+    const size_t clampedCount = std::max<size_t>(1, std::min<size_t>(requiredViewpointCount, 2));
+    Matrix4d pose;
+    if (!readManualProjectorPose(0, pose)) {
+        return {};
+    }
+    manualViewpoints.push_back(pose);
+
+    if (clampedCount >= 2) {
+        if (!readManualProjectorPose(1, pose)) {
+            return {};
+        }
+        manualViewpoints.push_back(pose);
+    }
+
+    return manualViewpoints;
 }
 
 void OffLineProgrammingSimulationMainWindow::onManualViewpointIkSolveClicked()
@@ -1180,7 +1310,7 @@ void OffLineProgrammingSimulationMainWindow::onManualViewpointIkSolveClicked()
         0.0,  0.0, -1.0,  manualIkBaseZ_,
         0.0,  0.0,  0.0,  1.0;
 
-    const Matrix4d tcpWorldPose = projectorPose * projectorEnd2CamMatrix().inverse();
+    const Matrix4d tcpWorldPose = projectorPose * projectorEnd2CamMatrix();
     const Matrix4d tcpPoseInBase = worldToBase * tcpWorldPose;
 
     PoseEstimation ikSolver(*robotConfig, 30, 100, 0.7, 1.8, 1.8);
@@ -3069,7 +3199,9 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
         break;
     }
 
-    if (trajectories.empty() || viewpoint.empty()) {
+    const bool useManualWeldingPlan = manualWeldingPlanCheckBox_ && manualWeldingPlanCheckBox_->isChecked();
+    const size_t requiredManualViewpointCount = std::max<size_t>(1, std::min<size_t>(viewpoint.size(), 2));
+    if (trajectories.empty() || (!useManualWeldingPlan && viewpoint.empty())) {
         QMessageBox::warning(this, u8"规划失败", u8"未生成有效焊缝路径，请先选择一条或两条有效焊缝");
         return;
     }
@@ -3082,7 +3214,27 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
     fixed_angles.resize(trajectories.size(), 0.0);
 
     PoseEstimation solver(*robotConfig, pop_size, gen, inertia, cognitive, social);
-    auto result = solver.optimizeBaseOnly(trajectories, viewpoint, fixed_angles);
+    PoseEstimation::Result result;
+    result.angles = fixed_angles;
+    result.cost = 0.0;
+
+    if (useManualWeldingPlan) {
+        std::vector<Matrix4d> manualViewpoints = readManualWeldingViewpoints(requiredManualViewpointCount);
+        if (manualViewpoints.empty()) {
+            QMessageBox::warning(this, u8"规划失败", u8"手动视点输入无效");
+            return;
+        }
+
+        viewpoint = manualViewpoints;
+        result.placement.x = manualBaseSpinBoxes_[0]->value();
+        result.placement.y = manualBaseSpinBoxes_[1]->value();
+        result.placement.z = manualBaseSpinBoxes_[2]->value();
+        appendPlanningInfo(QString(u8"Manual welding plan input\nBase position (mm): %1\nViewpoint count: %2")
+                               .arg(formatVector3dForInfo(Vector3d(result.placement.x, result.placement.y, result.placement.z)))
+                               .arg(viewpoint.size()));
+    } else {
+        result = solver.optimizeBaseOnly(trajectories, viewpoint, fixed_angles);
+    }
 //    auto result = solver.optimize(trajectories, viewpoint);
 
     qDebug() << "============ Optimization Result ============\n";

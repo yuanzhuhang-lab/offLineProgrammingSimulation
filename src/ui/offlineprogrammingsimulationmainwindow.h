@@ -32,6 +32,7 @@
 #include <cmath>
 #include <limits>
 #include <QDoubleSpinBox>
+#include <QCheckBox>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
@@ -162,6 +163,10 @@ private slots:
 
     void onManualViewpointIkNextClicked();
 
+    void onManualViewpoint1EulerClicked();
+
+    void onManualViewpoint2EulerClicked();
+
 private:
     Ui::OffLineProgrammingSimulationMainWindow *ui;
 
@@ -240,6 +245,11 @@ private:
     QDoubleSpinBox* manualBaseSpinBoxes_[3];
     QDoubleSpinBox* manualViewPositionSpinBoxes_[3];
     QDoubleSpinBox* manualViewAxisSpinBoxes_[9];
+    QDoubleSpinBox* manualView2PositionSpinBoxes_[3];
+    QDoubleSpinBox* manualView2AxisSpinBoxes_[9];
+    QDoubleSpinBox* manualViewEulerSpinBoxes_[2][3];
+    QPushButton* manualViewEulerButtons_[2];
+    QCheckBox* manualWeldingPlanCheckBox_;
     QPushButton* manualSolveIkButton_;
     QPushButton* manualNextIkSolutionButton_;
     QLabel* manualIkStatusLabel_;
@@ -406,6 +416,9 @@ private:
 
     void initManualViewpointIkPanel();
     bool readManualProjectorPose(Matrix4d& projectorPose) const;
+    bool readManualProjectorPose(int viewIndex, Matrix4d& projectorPose) const;
+    void applyManualEulerToViewpoint(int viewIndex);
+    std::vector<Matrix4d> readManualWeldingViewpoints(size_t requiredViewpointCount) const;
     void applyManualIkSolution(int solutionIndex);
 
     std::vector<vtkSmartPointer<vtkActor>> trajectoryPointActors_;  // 轨迹点可视化actors
