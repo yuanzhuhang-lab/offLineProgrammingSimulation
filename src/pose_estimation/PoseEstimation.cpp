@@ -318,42 +318,40 @@ double PoseEstimation::objective(
             0.0, 0.866, -0.5, -197.74489,
             0.0, 0.5,  0.866, 260.57368,
             0.0, 0.0,  0.0,   1.0;
+
+        Matrix4d baseTransformMatrix;
+        baseTransformMatrix << 1.0, 0.0, 0.0, -placement.x,
+                               0.0, -1.0, 0.0, placement.y,
+                               0.0, 0.0, -1.0, placement.z,
+                               0.0, 0.0, 0.0, 1.0;
+
         for (const auto& point : viewPoint) {
-            Matrix4d baseTransformMatrix;
-            baseTransformMatrix << 1.0, 0.0, 0.0, -placement.x,
-                                   0.0, -1.0, 0.0, placement.y,
-                                   0.0, 0.0, -1.0, placement.z,
-                                   0.0, 0.0, 0.0, 1.0;
-
             Matrix4d transformedPoint = (baseTransformMatrix * point) * end2camMatrix;
-
             std::vector<Vector6d> solves = inverseKinematics(transformedPoint);
-            if (solves.empty()) {
-                return {50};
-            } else {
-                bool has_valid_solution = false;
-                for (const auto& sol : solves) {
-                    std::vector<double> q_vec;
-                    q_vec.reserve(9);
+            bool hasValidViewpointSolution = false;
 
-                    for (int i = 0; i < 6; ++i) {
-                        q_vec.push_back(sol[i]);
-                    }
-
-                    q_vec.push_back(placement.x);
-                    q_vec.push_back(placement.y);
-                    q_vec.push_back(placement.z);
-
-                    // 检查同时满足碰撞检测和关节限制
-                    if (!isStateInCollision2(q_vec) && isValidSolution(sol, qlimits)) {
-                        has_valid_solution = true;
-                        break;  // 找到一个有效解即可
-                    }
+            for (const auto& sol : solves) {
+                if (!isValidSolution(sol, qlimits)) {
+                    continue;
                 }
 
-                if (!has_valid_solution) {
-                    return {50};  // 没有找到同时满足两个条件的解
+                std::vector<double> q_vec;
+                q_vec.reserve(9);
+                for (int i = 0; i < 6; ++i) {
+                    q_vec.push_back(sol[i]);
                 }
+                q_vec.push_back(placement.x);
+                q_vec.push_back(placement.y);
+                q_vec.push_back(placement.z);
+
+                if (!isStateInCollision2(q_vec)) {
+                    hasValidViewpointSolution = true;
+                    break;
+                }
+            }
+
+            if (!hasValidViewpointSolution) {
+                return 50;
             }
         }
     }

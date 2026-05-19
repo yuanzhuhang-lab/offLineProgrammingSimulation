@@ -3108,7 +3108,7 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
                 const size_t viewpointIndex = coordinateSystemGroup.size() >= 5
                     ? coordinateSystemGroup.size() - 5
                     : 0;
-                viewpoint.push_back(makeOffsetViewpoint(coordinateSystemGroup[viewpointIndex], 500.0, false));
+                viewpoint.push_back(makeOffsetViewpoint(coordinateSystemGroup[viewpointIndex], 300.0, false));
             }
         }
 
@@ -3285,76 +3285,54 @@ void OffLineProgrammingSimulationMainWindow::on_toolButton_4_clicked()
         qDebug()<<u8"机器人无法运动"<<endl;
     }
 
-    Matrix4d end2camMatrix;
-    end2camMatrix <<
-        1.0, 0.0, 0.0, -52.4276,
-        0.0, 0.866, -0.5, -197.74489,
-        0.0, 0.5,  0.866, 260.57368,
-        0.0, 0.0,  0.0,   1.0;
-
     std::vector<Vector6d> view;
     std::vector<Matrix4d> projectorPoses;
     std::vector<bool> viewpointIkReachable(viewpoint.size(), false);
     std::vector<QString> viewpointIkMessages(viewpoint.size());
     std::vector<int> viewpointReachableOrder(viewpoint.size(), -1);
-    const Vector6d referenceJointAngles = (!motions.empty() && !motions[0].empty())
-        ? motions[0][0]
-        : startAnglesDeg_;
+
+    Matrix4d viewpointEnd2CamMatrix;
+    viewpointEnd2CamMatrix <<
+        1.0, 0.0, 0.0, -52.4276,
+        0.0, 0.866, -0.5, -197.74489,
+        0.0, 0.5,  0.866, 260.57368,
+        0.0, 0.0,  0.0,   1.0;
+
     for (size_t viewIndex = 0; viewIndex < viewpoint.size(); ++viewIndex) {
-        const auto& p = viewpoint[viewIndex];
-        Matrix4d projectorPose = p;
-        Matrix4d q = (baseMatrix * p) * end2camMatrix;
-        std::vector<Vector6d> solutions = solver.inverseKinematics(q);
+        Matrix4d transformedPoint = (baseMatrix * viewpoint[viewIndex]) * viewpointEnd2CamMatrix;
+        std::vector<Vector6d> solves = solver.inverseKinematics(transformedPoint);
+        bool foundValidSolution = false;
 
-        bool found_valid_solution = false;
-        double min_distance = std::numeric_limits<double>::max();
-        Vector6d selected_solution;
-
-        for (const auto& sol : solutions) {
-            // 检查关节角限制
+        for (const auto& sol : solves) {
             if (!solver.isValidSolution(sol, solver.qlimits)) {
                 continue;
             }
 
-            // 检查碰撞
             std::vector<double> q_vec;
             q_vec.reserve(9);
-            for (int i = 0; i < 6; ++i) {
-                q_vec.push_back(sol[i]);
+            for (int axis = 0; axis < 6; ++axis) {
+                q_vec.push_back(sol[axis]);
             }
             q_vec.push_back(result.placement.x);
             q_vec.push_back(result.placement.y);
             q_vec.push_back(result.placement.z);
 
             if (!solver.isStateInCollision2(q_vec)) {
-                // 计算与motions[0][0]的距离
-                double distance = solver.angleDistance(sol, referenceJointAngles);
-
-                // 选择距离最小的解
-                if (distance < min_distance) {
-                    min_distance = distance;
-                    selected_solution = sol;
-                    found_valid_solution = true;
-                }
+                view.push_back(sol);
+                projectorPoses.push_back(viewpoint[viewIndex]);
+                viewpointIkReachable[viewIndex] = true;
+                viewpointReachableOrder[viewIndex] = static_cast<int>(view.size() - 1);
+                viewpointIkMessages[viewIndex] =
+                    QString(u8"视点 %1 已找到满足限位且不碰撞的IK解").arg(viewIndex + 1);
+                foundValidSolution = true;
+                break;
             }
         }
 
-        if (!found_valid_solution) {
+        if (!foundValidSolution) {
             viewpointIkMessages[viewIndex] =
-                QString(u8"视点 %1 不可达：IK原始解 %2 个，但无满足关节限位且不碰撞的解")
-                    .arg(viewIndex + 1)
-                    .arg(solutions.size());
-            continue;
+                QString(u8"视点 %1 未找到满足限位且不碰撞的IK解").arg(viewIndex + 1);
         }
-
-        viewpointIkReachable[viewIndex] = true;
-        viewpointReachableOrder[viewIndex] = static_cast<int>(view.size());
-        viewpointIkMessages[viewIndex] =
-            QString(u8"视点 %1 可达：IK原始解 %2 个，已选有效解")
-                .arg(viewIndex + 1)
-                .arg(solutions.size());
-        view.push_back(selected_solution);
-        projectorPoses.push_back(projectorPose);
     }
 
     if (view.empty()) {
